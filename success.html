@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Download Your Report — Outfitify</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root { --blue:#3D3F8F; --green:#4CAF8A; --dark:#0E0E1A; --card:#16162A; --grey:#888899; --light:#E8E8F0; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:var(--dark); color:white; font-family:'DM Sans',sans-serif; min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:24px; }
+
+  body::before {
+    content:''; position:fixed; inset:0;
+    background-image: linear-gradient(rgba(61,63,143,0.08) 1px, transparent 1px), linear-gradient(90deg, rgba(61,63,143,0.08) 1px, transparent 1px);
+    background-size:40px 40px; pointer-events:none; z-index:0;
+  }
+
+  .card {
+    position:relative; z-index:1; background:var(--card);
+    border:1px solid rgba(76,175,138,0.25); border-radius:24px;
+    padding:48px 40px; max-width:520px; width:100%; text-align:center;
+  }
+  .card::before {
+    content:''; position:absolute; top:0; left:0; right:0;
+    height:4px; background:linear-gradient(90deg,var(--blue),var(--green));
+    border-radius:24px 24px 0 0;
+  }
+
+  .logo { font-family:'Bebas Neue',sans-serif; font-size:22px; letter-spacing:5px; color:var(--green); margin-bottom:32px; display:block; }
+
+  /* Loading state */
+  .state { display:none; }
+  .state.active { display:block; }
+
+  .spinner {
+    width:56px; height:56px; border:3px solid rgba(76,175,138,0.2);
+    border-top-color:var(--green); border-radius:50%;
+    animation:spin 0.9s linear infinite; margin:0 auto 24px;
+  }
+  @keyframes spin { to { transform:rotate(360deg); } }
+
+  h2 { font-family:'Bebas Neue',sans-serif; font-size:40px; letter-spacing:2px; margin-bottom:12px; }
+  p { color:var(--grey); font-size:15px; line-height:1.7; margin-bottom:24px; }
+
+  .progress-bar {
+    background:rgba(255,255,255,0.06); border-radius:100px;
+    height:6px; overflow:hidden; margin-bottom:12px;
+  }
+  .progress-fill {
+    height:100%; background:linear-gradient(90deg,var(--blue),var(--green));
+    border-radius:100px; transition:width 0.5s ease;
+    animation:progress 45s linear forwards;
+  }
+  @keyframes progress { from{width:5%} to{width:95%} }
+  .progress-label { font-size:12px; color:var(--grey); }
+
+  .steps { display:flex; flex-direction:column; gap:10px; margin:24px 0; text-align:left; }
+  .step { display:flex; align-items:center; gap:12px; padding:12px 16px; background:rgba(255,255,255,0.03); border-radius:10px; }
+  .step-icon { font-size:18px; flex-shrink:0; }
+  .step-text { font-size:13px; color:var(--grey); }
+  .step.done .step-text { color:var(--light); }
+  .step-check { margin-left:auto; font-size:16px; color:var(--green); opacity:0; transition:opacity 0.3s; }
+  .step.done .step-check { opacity:1; }
+
+  /* Success state */
+  .tick-circle {
+    width:80px; height:80px; border-radius:50%;
+    background:rgba(76,175,138,0.15); border:2px solid var(--green);
+    display:flex; align-items:center; justify-content:center;
+    margin:0 auto 28px; font-size:36px;
+    animation:pop 0.4s cubic-bezier(0.175,0.885,0.32,1.275);
+  }
+  @keyframes pop { from{transform:scale(0)} to{transform:scale(1)} }
+
+  .download-btn {
+    display:block; width:100%;
+    background:linear-gradient(135deg,var(--green),#3a9e70);
+    color:white; font-family:'DM Sans',sans-serif;
+    font-size:17px; font-weight:700; padding:20px 32px;
+    border-radius:14px; border:none; cursor:pointer;
+    text-decoration:none; margin-bottom:14px;
+    box-shadow:0 8px 32px rgba(76,175,138,0.3);
+    transition:transform 0.15s, box-shadow 0.15s;
+  }
+  .download-btn:hover { transform:translateY(-2px); box-shadow:0 12px 40px rgba(76,175,138,0.4); }
+
+  .backup-note { font-size:12px; color:var(--grey); margin-top:8px; }
+  .backup-note a { color:var(--green); text-decoration:none; }
+
+  /* Error state */
+  .error-icon { font-size:48px; margin-bottom:16px; }
+  .retry-btn {
+    display:inline-block; background:transparent;
+    border:1px solid var(--green); color:var(--green);
+    padding:12px 32px; border-radius:10px; font-size:14px;
+    font-weight:600; cursor:pointer; text-decoration:none;
+  }
+</style>
+</head>
+<body>
+<div class="card">
+  <span class="logo">OUTFITIFY</span>
+
+  <!-- LOADING STATE -->
+  <div class="state active" id="stateLoading">
+    <div class="spinner"></div>
+    <h2>Building Your<br>Report</h2>
+    <p>Our AI is generating your personalised outfits right now. This takes about 30–45 seconds.</p>
+    <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+    <div class="progress-label" id="progressLabel">Analysing your style profile...</div>
+    <div class="steps">
+      <div class="step" id="step1"><div class="step-icon">🧠</div><div class="step-text">Analysing your quiz answers</div><div class="step-check">✓</div></div>
+      <div class="step" id="step2"><div class="step-icon">🛍️</div><div class="step-text">Selecting products from our database</div><div class="step-check">✓</div></div>
+      <div class="step" id="step3"><div class="step-icon">✨</div><div class="step-text">Generating personalised outfit combinations</div><div class="step-check">✓</div></div>
+      <div class="step" id="step4"><div class="step-icon">📄</div><div class="step-text">Building your PDF report</div><div class="step-check">✓</div></div>
+    </div>
+  </div>
+
+  <!-- SUCCESS STATE -->
+  <div class="state" id="stateSuccess">
+    <div class="tick-circle">✓</div>
+    <h2>Your Report<br>Is Ready!</h2>
+    <p>Your personalised style report is ready to download. Your outfits, colour palette, and styling guide are all inside.</p>
+    <a class="download-btn" id="downloadBtn" href="#" download="Outfitify-Style-Report.pdf">
+      ⬇️  Download My Style Report
+    </a>
+    <div class="backup-note">A backup download link has also been sent to your email.</div>
+  </div>
+
+  <!-- ERROR STATE -->
+  <div class="state" id="stateError">
+    <div class="error-icon">⚠️</div>
+    <h2>Taking Longer<br>Than Expected</h2>
+    <p>Your report is still being generated. Check your email in a few minutes — we'll send it there automatically.</p>
+    <a class="retry-btn" href="https://outfitify.co.uk">Back to Outfitify</a>
+  </div>
+</div>
+
+<script>
+  const params = new URLSearchParams(window.location.search);
+  const sessionId = params.get('sid');
+  const BACKEND = 'BACKEND_URL';
+
+  let pollCount = 0;
+  const MAX_POLLS = 30; // 90 seconds max
+  let stepTimer;
+
+  // Animate steps
+  const stepDelays = [3000, 8000, 16000, 28000];
+  stepDelays.forEach((delay, i) => {
+    setTimeout(() => {
+      document.getElementById(`step${i+1}`).classList.add('done');
+    }, delay);
+  });
+
+  const labels = [
+    'Analysing your style profile...',
+    'Matching products to your budget...',
+    'Writing your personalised style story...',
+    'Adding finishing touches...',
+    'Almost ready...'
+  ];
+  let labelIdx = 0;
+  const labelInterval = setInterval(() => {
+    labelIdx = (labelIdx + 1) % labels.length;
+    document.getElementById('progressLabel').textContent = labels[labelIdx];
+  }, 8000);
+
+  // Poll for readiness
+  async function poll() {
+    if (!sessionId) { showError(); return; }
+
+    try {
+      const res = await fetch(`${BACKEND}/api/report-status/${sessionId}`);
+      const data = await res.json();
+
+      if (data.ready && data.downloadToken) {
+        clearInterval(labelInterval);
+        showSuccess(data.downloadToken);
+      } else {
+        pollCount++;
+        if (pollCount >= MAX_POLLS) {
+          showError();
+        } else {
+          setTimeout(poll, 3000);
+        }
+      }
+    } catch (err) {
+      pollCount++;
+      if (pollCount >= MAX_POLLS) showError();
+      else setTimeout(poll, 3000);
+    }
+  }
+
+  function showSuccess(token) {
+    document.getElementById('stateLoading').classList.remove('active');
+    document.getElementById('stateSuccess').classList.add('active');
+    document.getElementById('downloadBtn').href = `${BACKEND}/api/download/${token}`;
+  }
+
+  function showError() {
+    document.getElementById('stateLoading').classList.remove('active');
+    document.getElementById('stateError').classList.add('active');
+  }
+
+  // Start polling after a short delay
+  setTimeout(poll, 5000);
+</script>
+</body>
+</html>
