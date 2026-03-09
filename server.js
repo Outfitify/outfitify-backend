@@ -20,6 +20,8 @@ app.use(cors({
   origin: [
     'https://outfitify.co.uk',
     'https://quiz.outfitify.co.uk',
+    'https://unlock.outfitify.co.uk',
+    'https://success.outfitify.co.uk',
     'https://chipper-fairy-2f755d.netlify.app',
     /\.netlify\.app$/,
     'http://localhost:3000'
