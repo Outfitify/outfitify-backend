@@ -18,7 +18,8 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 // ── CORS: allow your Netlify domains ──
 app.use(cors({
   origin: [
-    'https://outfitify.co.uk',
+    'https://outfitify.co.uk', 'https://unlock.outfitify.co.uk',
+    'https://success.outfitify.co.uk',
     'https://quiz.outfitify.co.uk',
     'https://chipper-fairy-2f755d.netlify.app',
     /\.netlify\.app$/,
