@@ -20,8 +20,6 @@ app.use(cors({
   origin: [
     'https://outfitify.co.uk',
     'https://quiz.outfitify.co.uk',
-    'https://unlock.outfitify.co.uk',
-    'https://success.outfitify.co.uk',
     'https://chipper-fairy-2f755d.netlify.app',
     /\.netlify\.app$/,
     'http://localhost:3000'
@@ -89,7 +87,7 @@ app.post('/api/create-checkout', async (req, res) => {
         quantity: 1,
       }],
       mode: 'payment',
-      success_url: `${process.env.BASE_URL}/success?token={CHECKOUT_SESSION_ID}&sid=${sessionId}`,
+      success_url: `${process.env.SUCCESS_URL || "https://success.outfitify.co.uk"}?token={CHECKOUT_SESSION_ID}&sid=${sessionId}`,
       cancel_url: `${process.env.UNLOCK_PAGE_URL}?sid=${sessionId}&cancelled=true`,
       customer_email: sessions.get(sessionId).email,
       metadata: { sessionId },
