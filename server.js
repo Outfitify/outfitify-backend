@@ -18,8 +18,7 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 // ── CORS: allow your Netlify domains ──
 app.use(cors({
   origin: [
-    'https://outfitify.co.uk', 'https://unlock.outfitify.co.uk',
-    'https://success.outfitify.co.uk',
+    'https://outfitify.co.uk',
     'https://quiz.outfitify.co.uk',
     'https://chipper-fairy-2f755d.netlify.app',
     /\.netlify\.app$/,
@@ -353,7 +352,8 @@ Rules:
     messages: [{ role: 'user', content: prompt }]
   });
 
-  const text = message.content[0].text.trim();
+  const raw = message.content[0].text.trim();
+  const text = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
   return JSON.parse(text);
 }
 
