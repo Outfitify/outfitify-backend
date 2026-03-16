@@ -15,6 +15,26 @@ const os = require('os');
 const app = express();
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
+// ── GRACEFUL SHUTDOWN ──
+// Track in-flight report jobs so SIGTERM waits for them to finish
+let activeJobs = 0;
+let shuttingDown = false;
+
+process.on('SIGTERM', () => {
+  shuttingDown = true;
+  console.log(`SIGTERM received. Active jobs: ${activeJobs}. Waiting before exit...`);
+  const wait = () => {
+    if (activeJobs === 0) {
+      console.log('All jobs done, exiting.');
+      process.exit(0);
+    } else {
+      console.log(`Still waiting on ${activeJobs} job(s)...`);
+      setTimeout(wait, 5000);
+    }
+  };
+  wait();
+});
+
 // ── CORS: allow your Netlify domains ──
 app.use(cors({
   origin: [
@@ -197,7 +217,8 @@ app.get('/api/download/:token', (req, res) => {
 // CORE: Generate personalised PDF report
 // ════════════════════════════════════════
 async function generateAndStoreReport(sessionId, quizData, userEmail) {
-  console.log(`Generating report for session ${sessionId}...`);
+  activeJobs++;
+  console.log(`Generating report for session ${sessionId}... (active jobs: ${activeJobs})`);
 
   try {
     // 1. Fetch products from Google Sheet
@@ -221,6 +242,9 @@ async function generateAndStoreReport(sessionId, quizData, userEmail) {
 
   } catch (err) {
     console.error(`Report generation failed for ${sessionId}:`, err);
+  } finally {
+    activeJobs--;
+    console.log(`Job done for ${sessionId}. Active jobs remaining: ${activeJobs}`);
   }
 }
 
@@ -568,25 +592,36 @@ async function buildPDF(content, quizData, products) {
     doc.fontSize(7).fillColor(GREY).font('Helvetica-Bold')
        .text('THE ITEMS', PAD, 240, { characterSpacing: 2 });
 
-    // Items
-    let itemY = 255;
-    for (const item of outfit.items) {
-      // Try to find image
+    // Pre-fetch all images for this outfit in parallel
+    const imageBuffers = await Promise.all(outfit.items.map(async item => {
       let imageUrl = null;
       for (const catItems of Object.values(products)) {
         const match = catItems.find(p => p['Item Name'] === item.name);
         if (match) { imageUrl = match['Image URL']; break; }
       }
+      if (!imageUrl) return null;
+      try {
+        const imgResp = await axios.get(imageUrl, { responseType: 'arraybuffer', timeout: 5000 });
+        return Buffer.from(imgResp.data);
+      } catch (e) {
+        return null;
+      }
+    }));
+
+    // Items
+    let itemY = 255;
+    for (let itemIdx = 0; itemIdx < outfit.items.length; itemIdx++) {
+      const item = outfit.items[itemIdx];
+      const imgBuffer = imageBuffers[itemIdx];
 
       // Item card
       doc.roundedRect(PAD, itemY, IW, 66).fill(CARD);
       doc.roundedRect(PAD, itemY, IW, 66).strokeColor(CARD2).lineWidth(1).stroke();
 
-      // Try image
-      if (imageUrl) {
+      // Image
+      if (imgBuffer) {
         try {
-          const imgResp = await axios.get(imageUrl, { responseType: 'arraybuffer', timeout: 5000 });
-          doc.image(Buffer.from(imgResp.data), PAD + 8, itemY + 5, { width: 56, height: 56, cover: [56, 56] });
+          doc.image(imgBuffer, PAD + 8, itemY + 5, { width: 56, height: 56, cover: [56, 56] });
         } catch (e) {
           doc.roundedRect(PAD + 8, itemY + 5, 56, 56, 6).fill(CARD2);
         }
