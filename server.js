@@ -360,297 +360,297 @@ Rules:
 }
 
 // ════════════════════════════════════════
-// Build the PDF using PDFKit
+// Build the PDF using PDFKit (dark theme)
 // ════════════════════════════════════════
 async function buildPDF(content, quizData, products) {
   const pdfPath = path.join(os.tmpdir(), `outfitify-${Date.now()}.pdf`);
-  const doc = new PDFDocument({ size: 'A4', margin: 40 });
+  const doc = new PDFDocument({ size: 'A4', margin: 0, autoFirstPage: true });
   const stream = fs.createWriteStream(pdfPath);
-
-  // Colours
-  const DARK    = '#0E0E1A';
-  const BLUE    = '#3D3F8F';
-  const GREEN   = '#4CAF8A';
-  const WHITE   = '#FFFFFF';
-  const GREY    = '#888899';
-  const LIGHT   = '#E8E8F0';
-  const CARD    = '#16162A';
-
   doc.pipe(stream);
 
-  // ── Helper: draw rounded rect ──
-  function roundedRect(x, y, w, h, r, fillColor, strokeColor) {
-    doc.roundedRect(x, y, w, h, r);
-    if (fillColor) doc.fillColor(fillColor);
-    if (strokeColor) doc.strokeColor(strokeColor).lineWidth(1);
-    if (fillColor && strokeColor) doc.fillAndStroke();
-    else if (fillColor) doc.fill();
-    else if (strokeColor) doc.stroke();
+  // ── Design tokens ──
+  const BG      = '#0D1117';
+  const HEADER  = '#161B22';
+  const BORDER  = '#30363D';
+  const GREEN   = '#6EE7B7';
+  const PURPLE  = '#A78BFA';
+  const WHITE   = '#F0F6FC';
+  const GREY    = '#8B949E';
+  const MUTED   = '#C9D1D9';
+  const CARD    = '#161B22';
+  const CARD2   = '#21262D';
+  const RED     = '#F87171';
+
+  const PW = 595, PH = 842;
+  const PAD = 50;
+  const IW = PW - PAD * 2; // inner width = 495
+
+  // ── Helpers ──
+  function bg() { doc.rect(0, 0, PW, PH).fill(BG); }
+
+  function header(sub) {
+    doc.rect(0, 0, PW, 40).fill(HEADER);
+    doc.rect(0, 39, PW, 1).fill(BORDER);
+    doc.fontSize(9).fillColor(WHITE).font('Helvetica-Bold')
+       .text('OUTFITIFY', 0, 13, { width: PW, align: 'center', characterSpacing: 5 });
+    if (sub) {
+      doc.fontSize(7).fillColor(GREY).font('Helvetica')
+         .text(sub, 0, 25, { width: PW, align: 'center', characterSpacing: 1 });
+    }
   }
 
-  // ── PAGE 1: Cover ──
-  // Background
-  doc.rect(0, 0, 595, 842).fill(DARK);
+  function footer() {
+    doc.rect(0, PH - 30, PW, 30).fill(HEADER);
+    doc.rect(0, PH - 30, PW, 1).fill(BORDER);
+    doc.fontSize(7.5).fillColor(GREY).font('Helvetica')
+       .text('outfitify.co.uk  ·  Making style effortless  ·  © Outfitify', 0, PH - 17, { width: PW, align: 'center' });
+  }
 
-  // Top accent bar
-  doc.rect(0, 0, 595, 6).fill(GREEN);
+  function sectionLabel(text, y) {
+    doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold')
+       .text(text, PAD, y, { characterSpacing: 2 });
+    doc.moveTo(PAD, y + 13).lineTo(PAD + IW, y + 13).strokeColor(CARD2).lineWidth(1).stroke();
+  }
 
-  // Logo area
-  roundedRect(40, 30, 515, 80, 8, BLUE, null);
-  doc.fontSize(28).fillColor(GREEN).font('Helvetica-Bold')
-     .text('OUTFITIFY', 40, 48, { width: 515, align: 'center' });
-  doc.fontSize(11).fillColor(LIGHT).font('Helvetica')
-     .text('Your Personalised Style Report', 40, 82, { width: 515, align: 'center' });
+  function card(x, y, w, h, color) {
+    doc.roundedRect(x, y, w, h, 8).fill(color || CARD);
+  }
 
-  // Style type hero
-  doc.fontSize(42).fillColor(WHITE).font('Helvetica-Bold')
-     .text(content.styleType, 40, 140, { width: 515, align: 'center' });
-  doc.fontSize(16).fillColor(GREEN).font('Helvetica')
-     .text(content.styleTagline, 40, 198, { width: 515, align: 'center' });
+  function lcard(x, y, w, h, accentColor) {
+    doc.rect(x, y, w, h).fill(CARD);
+    doc.roundedRect(x, y, w, h, 6).fill(CARD);
+    doc.rect(x, y, 3, h).fill(accentColor || GREEN);
+  }
 
-  // Divider
-  doc.moveTo(40, 230).lineTo(555, 230).strokeColor(BLUE).lineWidth(1).stroke();
+  // ════════════════════════════════════════
+  // PAGE 1: COVER
+  // ════════════════════════════════════════
+  bg();
+  // Hero gradient block
+  doc.rect(0, 40, PW, 160).fill('#0C1622');
+  doc.moveTo(0, 200).lineTo(PW, 200).strokeColor(CARD2).lineWidth(1).stroke();
 
-  // Intro
-  roundedRect(40, 245, 515, 90, 8, CARD, null);
-  doc.fontSize(12).fillColor(LIGHT).font('Helvetica')
-     .text(content.intro, 55, 258, { width: 485, align: 'left', lineGap: 4 });
+  header();
+
+  // Eyebrow
+  doc.moveTo(PAD, 65).lineTo(PAD + 20, 65).strokeColor(GREEN).lineWidth(2).stroke();
+  doc.fontSize(9).fillColor(GREY).font('Helvetica')
+     .text('Your Personalised Style Report', PAD + 28, 60);
+
+  // Big style name
+  const parts = content.styleType.split(' ');
+  const line1 = parts[0] || '';
+  const line2 = parts.slice(1).join(' ') || '';
+  doc.fontSize(52).fillColor(WHITE).font('Helvetica-Bold').text(line1.toUpperCase(), PAD, 78);
+  doc.fontSize(52).fillColor(GREEN).font('Helvetica-Bold').text(line2.toUpperCase(), PAD, 128);
+
+  // Tagline
+  doc.fontSize(10).fillColor(GREY).font('Helvetica-Oblique')
+     .text(content.styleTagline, PAD, 186, { width: IW });
+
+  // About card
+  lcard(PAD, 218, IW, 72, GREEN);
+  doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold')
+     .text('ABOUT YOUR REPORT', PAD + 14, 226, { characterSpacing: 2 });
+  doc.fontSize(10).fillColor(MUTED).font('Helvetica')
+     .text(content.intro, PAD + 14, 240, { width: IW - 28, lineGap: 3 });
 
   // Colour palette
-  doc.fontSize(10).fillColor(GREY).font('Helvetica-Bold')
-     .text('YOUR COLOUR PALETTE', 40, 355, { characterSpacing: 2 });
-
-  const swatchW = 85;
-  const swatchX = 40;
+  sectionLabel('YOUR COLOUR PALETTE', 308);
+  const sw = 56, swGap = 11;
   content.colourPalette.colours.forEach((hex, i) => {
-    const x = swatchX + i * (swatchW + 8);
-    roundedRect(x, 375, swatchW, 50, 6, hex, null);
+    const x = PAD + i * (sw + swGap);
+    doc.roundedRect(x, 330, sw, sw, 8).fill(hex);
     doc.fontSize(8).fillColor(GREY).font('Helvetica')
-       .text(content.colourPalette.labels[i] || '', x, 432, { width: swatchW, align: 'center' });
+       .text(content.colourPalette.labels[i] || '', x, 393, { width: sw, align: 'center' });
   });
-
-  doc.fontSize(10).fillColor(LIGHT).font('Helvetica')
-     .text(content.colourPalette.description, 40, 452, { width: 515, lineGap: 3 });
+  doc.fontSize(10).fillColor(GREY).font('Helvetica')
+     .text(content.colourPalette.description, PAD, 410, { width: IW, lineGap: 3 });
 
   // What's inside
-  doc.fontSize(10).fillColor(GREY).font('Helvetica-Bold')
-     .text("WHAT'S INSIDE YOUR REPORT", 40, 505, { characterSpacing: 2 });
-
+  sectionLabel("WHAT'S INSIDE", 450);
   const insideItems = [
-    ['👕', '3 Complete Outfits', 'Built around your style and budget'],
-    ['🛍️', 'Real Product Links', 'Click straight through to buy each item'],
-    ['🎨', 'Colour Palette', 'Your personal tones that always work together'],
-    ['💡', 'Styling Tips', 'Do\'s, don\'ts, and seasonal guidance'],
+    ['3', 'Complete Outfits', 'Built around your style and budget'],
+    ['✓', 'Real Product Links', 'Click straight through to buy'],
+    ['5', 'Colour Palette', 'Your personal tones that always work'],
+    ['✓', 'Styling Tips', "Do's, don'ts & seasonal guidance"],
   ];
-
-  insideItems.forEach(([icon, title, desc], i) => {
-    const row = Math.floor(i / 2);
-    const col = i % 2;
-    const x = 40 + col * 265;
-    const y = 525 + row * 65;
-    roundedRect(x, y, 250, 55, 6, CARD, null);
-    doc.fontSize(18).text(icon, x + 12, y + 18);
-    doc.fontSize(11).fillColor(WHITE).font('Helvetica-Bold').text(title, x + 48, y + 13);
-    doc.fontSize(9).fillColor(GREY).font('Helvetica').text(desc, x + 48, y + 29, { width: 190 });
+  insideItems.forEach(([num, title, desc], i) => {
+    const col = i % 2, row = Math.floor(i / 2);
+    const x = PAD + col * (IW / 2 + 5), y = 472 + row * 58;
+    card(x, y, IW / 2 - 5, 50, CARD2);
+    doc.fontSize(20).fillColor(GREEN).font('Helvetica-Bold').text(num, x + 12, y + 15);
+    doc.fontSize(10).fillColor(WHITE).font('Helvetica-Bold').text(title, x + 46, y + 10);
+    doc.fontSize(8).fillColor(GREY).font('Helvetica').text(desc, x + 46, y + 25, { width: 170 });
   });
 
-  // Footer
-  doc.rect(0, 810, 595, 32).fill(BLUE);
-  doc.fontSize(9).fillColor(LIGHT).font('Helvetica')
-     .text('outfitify.co.uk  ·  Making style effortless  ·  © Outfitify', 0, 820, { align: 'center' });
+  footer();
 
-  // ── PAGES 2-4: One page per outfit ──
+  // ════════════════════════════════════════
+  // PAGES 2-4: OUTFIT PAGES
+  // ════════════════════════════════════════
   for (let i = 0; i < content.outfits.length; i++) {
     const outfit = content.outfits[i];
     doc.addPage();
-    doc.rect(0, 0, 595, 842).fill(DARK);
-    doc.rect(0, 0, 595, 6).fill(GREEN);
+    bg();
+    header(`Outfit ${i + 1} of ${content.outfits.length}`);
 
-    // Header
-    roundedRect(40, 20, 515, 55, 8, BLUE, null);
-    doc.fontSize(11).fillColor(GREEN).font('Helvetica-Bold')
-       .text('OUTFITIFY', 40, 30, { width: 515, align: 'center', characterSpacing: 3 });
-    doc.fontSize(10).fillColor(GREY).font('Helvetica')
-       .text(`Outfit ${i + 1} of ${content.outfits.length}`, 40, 48, { width: 515, align: 'center' });
+    // Hero
+    doc.rect(0, 40, PW, 120).fill('#0C1622');
+    doc.moveTo(0, 160).lineTo(PW, 160).strokeColor(CARD2).lineWidth(1).stroke();
 
-    // Outfit name
-    doc.fontSize(30).fillColor(WHITE).font('Helvetica-Bold')
-       .text(`0${i + 1}  ${outfit.name.toUpperCase()}`, 40, 92);
-    doc.fontSize(13).fillColor(GREEN).font('Helvetica')
-       .text(outfit.vibe, 40, 130);
+    // Outfit number + name
+    doc.fontSize(40).font('Helvetica-Bold');
+    doc.fillColor(GREEN).text(`0${i + 1}`, PAD, 55, { continued: true });
+    doc.fillColor(WHITE).text(`  ${outfit.name.toUpperCase()}`);
+    doc.fontSize(11).fillColor(PURPLE).font('Helvetica-Oblique').text(outfit.vibe, PAD, 103);
 
-    // Meta pills
-    const pills = [
-      `📅 ${outfit.occasion}`,
-      `🌤 ${outfit.season}`,
-    ];
-    let pillX = 40;
-    pills.forEach(pill => {
-      const w = pill.length * 7 + 20;
-      roundedRect(pillX, 155, w, 24, 12, CARD, null);
-      doc.fontSize(9).fillColor(LIGHT).font('Helvetica').text(pill, pillX + 10, 162);
-      pillX += w + 10;
+    // Tags
+    let tagX = PAD;
+    [outfit.occasion, outfit.season].forEach(tag => {
+      const tw = Math.min(tag.length * 6 + 20, 200);
+      doc.roundedRect(tagX, 122, tw, 20, 10).fill(CARD2);
+      doc.fontSize(8).fillColor(GREY).font('Helvetica').text(tag, tagX + 10, 128, { width: tw - 20 });
+      tagX += tw + 8;
     });
 
-    // Why it works
-    roundedRect(40, 192, 515, 55, 8, CARD, null);
-    doc.fontSize(9).fillColor(GREEN).font('Helvetica-Bold')
-       .text('WHY THIS WORKS FOR YOU', 55, 200, { characterSpacing: 1 });
-    doc.fontSize(10).fillColor(LIGHT).font('Helvetica')
-       .text(outfit.whyItWorks, 55, 215, { width: 485, lineGap: 3 });
+    // Why it works card
+    lcard(PAD, 172, IW, 54, GREEN);
+    doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold')
+       .text('WHY THIS WORKS FOR YOU', PAD + 14, 180, { characterSpacing: 2 });
+    doc.fontSize(9.5).fillColor(MUTED).font('Helvetica')
+       .text(outfit.whyItWorks, PAD + 14, 194, { width: IW - 28, lineGap: 3 });
+
+    // Items label
+    doc.fontSize(7).fillColor(GREY).font('Helvetica-Bold')
+       .text('THE ITEMS', PAD, 240, { characterSpacing: 2 });
 
     // Items
-    doc.fontSize(9).fillColor(GREY).font('Helvetica-Bold')
-       .text('THE ITEMS', 40, 263, { characterSpacing: 2 });
-
-    // Try to fetch and embed product images
-    let itemY = 280;
+    let itemY = 255;
     for (const item of outfit.items) {
-      // Find product in our data to get image URL
+      // Try to find image
       let imageUrl = null;
       for (const catItems of Object.values(products)) {
         const match = catItems.find(p => p['Item Name'] === item.name);
         if (match) { imageUrl = match['Image URL']; break; }
       }
 
-      roundedRect(40, itemY, 515, 68, 6, CARD, null);
+      // Item card
+      doc.roundedRect(PAD, itemY, IW, 66).fill(CARD);
+      doc.roundedRect(PAD, itemY, IW, 66).strokeColor(CARD2).lineWidth(1).stroke();
 
-      // Try to embed image
+      // Try image
       if (imageUrl) {
         try {
-          const imgResp = await axios.get(imageUrl, {
-            responseType: 'arraybuffer', timeout: 5000
-          });
-          const imgBuffer = Buffer.from(imgResp.data);
-          doc.image(imgBuffer, 48, itemY + 6, { width: 56, height: 56, fit: [56, 56] });
+          const imgResp = await axios.get(imageUrl, { responseType: 'arraybuffer', timeout: 5000 });
+          doc.image(Buffer.from(imgResp.data), PAD + 8, itemY + 5, { width: 56, height: 56, cover: [56, 56] });
         } catch (e) {
-          // Image failed — draw placeholder
-          roundedRect(48, itemY + 6, 56, 56, 4, BLUE, null);
-          doc.fontSize(20).fillColor(GREEN).text('👕', 60, itemY + 22);
+          doc.roundedRect(PAD + 8, itemY + 5, 56, 56, 6).fill(CARD2);
         }
       } else {
-        roundedRect(48, itemY + 6, 56, 56, 4, BLUE, null);
+        doc.roundedRect(PAD + 8, itemY + 5, 56, 56, 6).fill(CARD2);
       }
 
-      // Item details
-      doc.fontSize(8).fillColor(GREEN).font('Helvetica-Bold')
-         .text(item.category.toUpperCase(), 115, itemY + 10, { characterSpacing: 1 });
-      doc.fontSize(11).fillColor(WHITE).font('Helvetica-Bold')
-         .text(item.name, 115, itemY + 22, { width: 320 });
-      doc.fontSize(9).fillColor(GREY).font('Helvetica')
-         .text(item.why, 115, itemY + 38, { width: 320, lineGap: 2 });
+      const tx = PAD + 74;
+      doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold')
+         .text(item.category.toUpperCase(), tx, itemY + 8, { characterSpacing: 1.5 });
+      doc.fontSize(10).fillColor(WHITE).font('Helvetica-Bold')
+         .text(item.name, tx, itemY + 20, { width: 300, lineGap: 2 });
+      doc.fontSize(8.5).fillColor(GREY).font('Helvetica')
+         .text(item.why, tx, itemY + 38, { width: 300, lineGap: 2 });
 
-      // Price + brand
-      doc.fontSize(14).fillColor(GREEN).font('Helvetica-Bold')
-         .text(item.price, 460, itemY + 14, { width: 80, align: 'right' });
-      doc.fontSize(9).fillColor(GREY).font('Helvetica')
-         .text(item.brand, 460, itemY + 35, { width: 80, align: 'right' });
+      doc.fontSize(18).fillColor(GREEN).font('Helvetica-Bold')
+         .text(item.price, PAD + IW - 70, itemY + 12, { width: 60, align: 'right' });
+      doc.fontSize(8).fillColor(GREY).font('Helvetica')
+         .text(item.brand, PAD + IW - 70, itemY + 36, { width: 60, align: 'right' });
 
-      itemY += 76;
+      itemY += 74;
     }
 
     // Styling tip
-    const tipY = itemY + 8;
-    roundedRect(40, tipY, 515, 48, 8, '#1A1A35', null);
-    doc.moveTo(40, tipY).lineTo(40, tipY + 48).strokeColor(GREEN).lineWidth(3).stroke();
-    doc.fontSize(9).fillColor(GREEN).font('Helvetica-Bold')
-       .text('STYLING TIP', 55, tipY + 8, { characterSpacing: 1 });
-    doc.fontSize(10).fillColor(LIGHT).font('Helvetica-Oblique')
-       .text(outfit.stylingTip, 55, tipY + 22, { width: 485, lineGap: 3 });
+    const tipY = itemY + 6;
+    lcard(PAD, tipY, IW, 44, PURPLE);
+    doc.fontSize(7).fillColor(PURPLE).font('Helvetica-Bold')
+       .text('STYLING TIP', PAD + 14, tipY + 8, { characterSpacing: 2 });
+    doc.fontSize(9.5).fillColor(MUTED).font('Helvetica-Oblique')
+       .text(outfit.stylingTip, PAD + 14, tipY + 22, { width: IW - 28 });
 
-    // Footer
-    doc.rect(0, 810, 595, 32).fill(BLUE);
-    doc.fontSize(9).fillColor(LIGHT).font('Helvetica')
-       .text('outfitify.co.uk  ·  Making style effortless', 0, 820, { align: 'center' });
+    footer();
   }
 
-  // ── FINAL PAGE: Style Guide ──
+  // ════════════════════════════════════════
+  // FINAL PAGE: STYLE GUIDE
+  // ════════════════════════════════════════
   doc.addPage();
-  doc.rect(0, 0, 595, 842).fill(DARK);
-  doc.rect(0, 0, 595, 6).fill(GREEN);
+  bg();
+  header('Your Personal Style Guide');
 
-  roundedRect(40, 20, 515, 55, 8, BLUE, null);
-  doc.fontSize(11).fillColor(GREEN).font('Helvetica-Bold')
-     .text('OUTFITIFY', 40, 30, { width: 515, align: 'center', characterSpacing: 3 });
-  doc.fontSize(10).fillColor(GREY).font('Helvetica')
-     .text('Your Personal Style Guide', 40, 48, { width: 515, align: 'center' });
-
-  doc.fontSize(26).fillColor(WHITE).font('Helvetica-Bold')
-     .text('YOUR STYLE GUIDE', 40, 92);
-  doc.fontSize(12).fillColor(GREEN).font('Helvetica')
-     .text(content.styleType, 40, 126);
+  // Hero
+  doc.rect(0, 40, PW, 80).fill('#0C1622');
+  doc.moveTo(0, 120).lineTo(PW, 120).strokeColor(CARD2).lineWidth(1).stroke();
+  doc.fontSize(26).fillColor(WHITE).font('Helvetica-Bold').text('YOUR STYLE GUIDE', PAD, 55);
+  doc.fontSize(12).fillColor(GREEN).font('Helvetica-Oblique').text(content.styleType, PAD, 88);
 
   // Do's and Don'ts
-  doc.fontSize(9).fillColor(GREY).font('Helvetica-Bold')
-     .text("DO'S & DON'TS", 40, 158, { characterSpacing: 2 });
+  sectionLabel("DO'S & DON'TS", 132);
 
   // Do column
-  roundedRect(40, 175, 248, 30, 6, '#1A3A2A', null);
-  doc.fontSize(11).fillColor(GREEN).font('Helvetica-Bold').text('✓  DO', 55, 185);
-
+  const colW = (IW - 10) / 2;
+  doc.roundedRect(PAD, 154, colW, 24, 6).fill('#0D2418');
+  doc.fontSize(9).fillColor(GREEN).font('Helvetica-Bold').text('✓  DO', PAD + 12, 163);
   content.styleGuide.doList.forEach((item, i) => {
-    const y = 212 + i * 30;
-    roundedRect(40, y, 248, 26, 4, CARD, null);
-    doc.fontSize(10).fillColor(LIGHT).font('Helvetica').text(`✓  ${item}`, 55, y + 8, { width: 218 });
+    const y = 184 + i * 28;
+    doc.roundedRect(PAD, y, colW, 22, 5).fill(CARD2);
+    doc.fontSize(8.5).fillColor(MUTED).font('Helvetica').text(`✓  ${item}`, PAD + 12, y + 7, { width: colW - 24 });
   });
 
   // Don't column
-  roundedRect(307, 175, 248, 30, 6, '#3A1A1A', null);
-  doc.fontSize(11).fillColor('#FF5252').font('Helvetica-Bold').text("✗  DON'T", 322, 185);
-
+  const col2X = PAD + colW + 10;
+  doc.roundedRect(col2X, 154, colW, 24, 6).fill('#2A1010');
+  doc.fontSize(9).fillColor(RED).font('Helvetica-Bold').text("✗  DON'T", col2X + 12, 163);
   content.styleGuide.dontList.forEach((item, i) => {
-    const y = 212 + i * 30;
-    roundedRect(307, y, 248, 26, 4, CARD, null);
-    doc.fontSize(10).fillColor(LIGHT).font('Helvetica').text(`✗  ${item}`, 322, y + 8, { width: 218 });
+    const y = 184 + i * 28;
+    doc.roundedRect(col2X, y, colW, 22, 5).fill(CARD2);
+    doc.fontSize(8.5).fillColor(MUTED).font('Helvetica').text(`✗  ${item}`, col2X + 12, y + 7, { width: colW - 24 });
   });
 
   // Essentials
-  const essY = 212 + content.styleGuide.doList.length * 30 + 20;
-  doc.fontSize(9).fillColor(GREY).font('Helvetica-Bold')
-     .text('3 ESSENTIALS EVERY MAN IN YOUR STYLE NEEDS', 40, essY, { characterSpacing: 1 });
-
+  const essY = 184 + content.styleGuide.doList.length * 28 + 16;
+  sectionLabel('3 ESSENTIALS EVERY MAN IN YOUR STYLE NEEDS', essY);
   content.styleGuide.essentials.forEach((item, i) => {
-    const y = essY + 20 + i * 36;
-    roundedRect(40, y, 515, 30, 6, CARD, null);
-    doc.fontSize(22).fillColor(GREEN).text(`0${i + 1}`, 50, y + 5);
-    doc.fontSize(11).fillColor(WHITE).font('Helvetica-Bold').text(item, 90, y + 10, { width: 450 });
+    const y = essY + 20 + i * 34;
+    doc.roundedRect(PAD, y, IW, 28, 6).fill(CARD2);
+    doc.fontSize(18).fillColor(GREEN).font('Helvetica-Bold').text(`0${i + 1}`, PAD + 10, y + 5);
+    doc.fontSize(10).fillColor(WHITE).font('Helvetica-Bold').text(item, PAD + 46, y + 9, { width: IW - 60 });
   });
 
   // Seasonal tips
-  const seasY = essY + 20 + content.styleGuide.essentials.length * 36 + 16;
-  doc.fontSize(9).fillColor(GREY).font('Helvetica-Bold')
-     .text('SEASONAL TIPS', 40, seasY, { characterSpacing: 2 });
-
+  const seasY = essY + 20 + content.styleGuide.essentials.length * 34 + 16;
+  sectionLabel('SEASONAL TIPS', seasY);
   const seasons = [
-    ['🌸 Spring', content.styleGuide.seasonalTips.spring],
-    ['☀️ Summer', content.styleGuide.seasonalTips.summer],
-    ['🍂 Autumn', content.styleGuide.seasonalTips.autumn],
-    ['❄️ Winter', content.styleGuide.seasonalTips.winter],
+    ['Spring', GREEN,   content.styleGuide.seasonalTips.spring],
+    ['Summer', '#F59E0B', content.styleGuide.seasonalTips.summer],
+    ['Autumn', '#D97706', content.styleGuide.seasonalTips.autumn],
+    ['Winter', PURPLE,  content.styleGuide.seasonalTips.winter],
   ];
-
-  seasons.forEach(([season, tip], i) => {
-    const col = i % 2;
-    const row = Math.floor(i / 2);
-    const x = 40 + col * 265;
-    const y = seasY + 20 + row * 70;
-    roundedRect(x, y, 248, 62, 6, CARD, null);
-    doc.fontSize(11).fillColor(GREEN).font('Helvetica-Bold').text(season, x + 12, y + 10);
-    doc.fontSize(9).fillColor(LIGHT).font('Helvetica').text(tip, x + 12, y + 28, { width: 224, lineGap: 3 });
+  seasons.forEach(([name, color, tip], i) => {
+    const col = i % 2, row = Math.floor(i / 2);
+    const x = PAD + col * (colW + 10), y = seasY + 20 + row * 62;
+    doc.roundedRect(x, y, colW, 54, 6).fill(CARD2);
+    doc.fontSize(10).fillColor(color).font('Helvetica-Bold').text(name, x + 10, y + 10);
+    doc.fontSize(8.5).fillColor(GREY).font('Helvetica').text(tip, x + 10, y + 28, { width: colW - 20, lineGap: 2 });
   });
 
   // CTA
-  const ctaY = seasY + 20 + 2 * 70 + 16;
-  roundedRect(40, ctaY, 515, 60, 8, BLUE, null);
-  doc.fontSize(14).fillColor(WHITE).font('Helvetica-Bold')
-     .text('Want new outfits as your style evolves?', 40, ctaY + 12, { width: 515, align: 'center' });
-  doc.fontSize(11).fillColor(GREEN).font('Helvetica')
-     .text('Retake the quiz anytime at outfitify.co.uk', 40, ctaY + 34, { width: 515, align: 'center' });
+  const ctaY = seasY + 20 + 2 * 62 + 14;
+  doc.roundedRect(PAD, ctaY, IW, 52, 8).fill(CARD2);
+  doc.roundedRect(PAD, ctaY, IW, 52, 8).strokeColor(GREEN).lineWidth(1).stroke();
+  doc.fontSize(12).fillColor(WHITE).font('Helvetica-Bold')
+     .text('Want new outfits as your style evolves?', PAD, ctaY + 12, { width: IW, align: 'center' });
+  doc.fontSize(10).fillColor(GREEN).font('Helvetica')
+     .text('Retake the quiz anytime at outfitify.co.uk', PAD, ctaY + 30, { width: IW, align: 'center' });
 
-  // Footer
-  doc.rect(0, 810, 595, 32).fill(BLUE);
-  doc.fontSize(9).fillColor(LIGHT).font('Helvetica')
-     .text('outfitify.co.uk  ·  Making style effortless  ·  © Outfitify', 0, 820, { align: 'center' });
-
+  footer();
   doc.end();
 
   return new Promise((resolve, reject) => {
