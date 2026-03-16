@@ -231,27 +231,42 @@ async function fetchProducts(style, budget, colours) {
   };
   const maxPrice = budgetMap[budget] || 100;
 
-  // Map style to sheet style values
+  // Map style to sheet style values — must match column I exactly
   const styleMap = {
-    'Everyday fits': 'Everyday Fits',
-    'Streetwear': 'Streetwear',
-    'Smart casual / Workwear': 'Smart Casual',
-    'Date night / Going out': 'Date Night',
-    'Active/Gym Wear': 'Active/Gym Wear'
+    'everyday fits':           'Everyday Fits',
+    'everyday fit':            'Everyday Fits',
+    'streetwear':              'Streetwear',
+    'smart casual':            'Smart Casual/Workwear',
+    'smart casual / workwear': 'Smart Casual/Workwear',
+    'date night':              'Date Night/Going Out',
+    'date night / going out':  'Date Night/Going Out',
+    'active':                  'Active/Gym wear',
+    'active/gym wear':         'Active/Gym wear',
+    'active gym wear':         'Active/Gym wear',
   };
-  const sheetStyle = styleMap[style] || style;
+  const sheetStyle = styleMap[(style || '').toLowerCase()] || 'Everyday Fits';
 
-  // Filter by style and budget
+  console.log(`[fetchProducts] raw style="${style}" → sheetStyle="${sheetStyle}" budget=${maxPrice}`);
+
+  // Filter by style and budget — no fallback to avoid mixing styles
   const filtered = products.filter(p => {
     const price = parseFloat(p['Price']) || 0;
-    const matchesStyle = p['Style'] === sheetStyle || p['Style'] === 'Everyday Fits'; // fallback
+    const matchesStyle = (p['Style'] || '').trim() === sheetStyle;
     const matchesBudget = price <= maxPrice;
-    return matchesStyle && matchesBudget && p['Item Name'] && p['Image URL'];
+    return matchesStyle && matchesBudget && p['Item Name'];
+  });
+
+  console.log(`[fetchProducts] filtered ${filtered.length} products for style="${sheetStyle}"`);
+
+  // If nothing matched, fall back to all products within budget
+  const pool = filtered.length >= 6 ? filtered : products.filter(p => {
+    const price = parseFloat(p['Price']) || 0;
+    return price <= maxPrice && p['Item Name'];
   });
 
   // Group by category
   const byCategory = {};
-  filtered.forEach(p => {
+  pool.forEach(p => {
     const cat = p['Category'] || 'Other';
     if (!byCategory[cat]) byCategory[cat] = [];
     byCategory[cat].push(p);
@@ -499,11 +514,13 @@ async function buildPDF(content, quizData, products) {
     doc.rect(0, 40, PW, 120).fill('#0C1622');
     doc.moveTo(0, 160).lineTo(PW, 160).strokeColor(CARD2).lineWidth(1).stroke();
 
-    // Outfit number + name
-    doc.fontSize(40).font('Helvetica-Bold');
-    doc.fillColor(GREEN).text(`0${i + 1}`, PAD, 55, { continued: true });
-    doc.fillColor(WHITE).text(`  ${outfit.name.toUpperCase()}`);
-    doc.fontSize(11).fillColor(PURPLE).font('Helvetica-Oblique').text(outfit.vibe, PAD, 103);
+    // Outfit number + name — clamp font size to prevent overflow
+    const nameText = outfit.name.toUpperCase();
+    const nameFontSize = nameText.length > 20 ? 28 : nameText.length > 14 ? 34 : 40;
+    doc.fontSize(nameFontSize).font('Helvetica-Bold');
+    doc.fillColor(GREEN).text(`0${i + 1}`, PAD, 58, { continued: true });
+    doc.fillColor(WHITE).text(`  ${nameText}`, { lineBreak: false });
+    doc.fontSize(11).fillColor(PURPLE).font('Helvetica-Oblique').text(outfit.vibe, PAD, 108);
 
     // Tags
     let tagX = PAD;
