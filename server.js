@@ -65,6 +65,8 @@ app.post('/api/save-session', (req, res) => {
 
 // ════════════════════════════════════════
 // STEP 2 — Create Stripe Checkout Session
+// Quiz data is stored in Stripe metadata so it
+// survives server restarts before webhook fires
 // ════════════════════════════════════════
 app.post('/api/create-checkout', async (req, res) => {
   const { sessionId } = req.body;
@@ -72,6 +74,8 @@ app.post('/api/create-checkout', async (req, res) => {
   if (!sessions.has(sessionId)) {
     return res.status(400).json({ error: 'Session not found or expired' });
   }
+
+  const quizData = sessions.get(sessionId);
 
   try {
     const checkoutSession = await stripe.checkout.sessions.create({
@@ -91,8 +95,17 @@ app.post('/api/create-checkout', async (req, res) => {
       mode: 'payment',
       success_url: `${process.env.SUCCESS_URL || "https://success.outfitify.co.uk"}?token={CHECKOUT_SESSION_ID}&sid=${sessionId}`,
       cancel_url: `${process.env.UNLOCK_PAGE_URL}?sid=${sessionId}&cancelled=true`,
-      customer_email: sessions.get(sessionId).email,
-      metadata: { sessionId },
+      customer_email: quizData.email,
+      metadata: {
+        sessionId,
+        style:        quizData.style        || '',
+        budget:       quizData.budget       || '',
+        colours:      quizData.colours      || '',
+        struggles:    quizData.struggles    || '',
+        brands:       quizData.brands       || '',
+        openToBrands: quizData.openToBrands || '',
+        email:        quizData.email        || '',
+      },
     });
 
     res.json({ url: checkoutSession.url });
@@ -105,6 +118,8 @@ app.post('/api/create-checkout', async (req, res) => {
 // ════════════════════════════════════════
 // STEP 3 — Stripe Webhook (payment confirmed)
 // Triggers PDF generation
+// Quiz data is read from Stripe metadata — not
+// in-memory sessions — so restarts don't break it
 // ════════════════════════════════════════
 app.post('/webhook', async (req, res) => {
   const sig = req.headers['stripe-signature'];
@@ -122,11 +137,22 @@ app.post('/webhook', async (req, res) => {
     const sessionId = session.metadata.sessionId;
     const userEmail = session.customer_email;
 
-    if (sessions.has(sessionId)) {
-      const quizData = sessions.get(sessionId);
-      // Fire and forget — generate PDF in background
-      generateAndStoreReport(sessionId, quizData, userEmail).catch(console.error);
-    }
+    console.log(`Webhook received for session ${sessionId}, email: ${userEmail}`);
+
+    const quizData = {
+      style:        session.metadata.style,
+      budget:       session.metadata.budget,
+      colours:      session.metadata.colours,
+      struggles:    session.metadata.struggles,
+      brands:       session.metadata.brands,
+      openToBrands: session.metadata.openToBrands,
+      email:        session.metadata.email,
+    };
+
+    // Fire and forget — generate PDF in background
+    generateAndStoreReport(sessionId, quizData, userEmail).catch(err => {
+      console.error(`Unhandled error in generateAndStoreReport for ${sessionId}:`, err);
+    });
   }
 
   res.json({ received: true });
