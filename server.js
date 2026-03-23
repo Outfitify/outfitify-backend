@@ -411,22 +411,37 @@ Generate a style report with exactly this JSON structure (respond with JSON only
           "name": "exact product name from the list above",
           "brand": "brand name",
           "price": "£XX",
-          "why": "one sentence why this works for their style"
+          "url": "product url from the list above — must be exact",
+          "why": "one sentence why this works for their style — be specific about fit, fabric, or detail, not generic praise"
         }
       ],
-      "stylingTip": "specific styling tip for this outfit",
-      "whyItWorks": "2 sentences explaining why this outfit works for their profile"
+      "stylingTip": "a specific, actionable tip about how to wear this exact outfit — e.g. roll hems, tuck/untuck, which layer to leave open, what to add or remove. Must reference the actual items in the outfit.",
+      "whyItWorks": "2 sentences explaining why this outfit works for their profile — reference their specific struggle or preference"
     }
   ],
   "styleGuide": {
-    "doList": ["Do this", "Do that", "Do this too", "And this"],
-    "dontList": ["Avoid this", "Never this", "Skip this", "Not this"],
-    "essentials": ["Item 1 every man in this style needs", "Item 2", "Item 3"],
+    "doList": [
+      "Specific actionable do — e.g. 'Cuff your jeans once to expose the ankle and make trainers the focal point'",
+      "Another specific do with a reason — e.g. 'Size up one in hoodies for the relaxed silhouette streetwear requires'",
+      "A do about colour or palette — e.g. 'Use white as your base layer — it makes every other colour you add look intentional'",
+      "A do about fit or proportion — e.g. 'Pair wide-leg bottoms with a fitted or cropped top to keep proportions balanced'"
+    ],
+    "dontList": [
+      "Specific don't with consequence — e.g. 'Don't wear head-to-toe black without a texture break — it reads flat, not sleek'",
+      "Don't about fit — e.g. 'Don't wear slim-fit everything — streetwear lives in relaxed proportions, slim fits kill the silhouette'",
+      "Don't about over-accessorising or over-branding — e.g. 'Don't stack multiple logo pieces — one branded item per outfit max'",
+      "Don't about a common mistake for this style"
+    ],
+    "essentials": [
+      "Essential item with specific reason — e.g. 'A heavyweight white tee (not lightweight) — it holds shape and drapes better'",
+      "Essential item 2 with specific reason",
+      "Essential item 3 with specific reason"
+    ],
     "seasonalTips": {
-      "spring": "one tip",
-      "summer": "one tip",
-      "autumn": "one tip",
-      "winter": "one tip"
+      "spring": "specific tip for this style in spring — what to add, layer, or swap",
+      "summer": "specific tip for this style in summer — fabrics, colours, or silhouette adjustments",
+      "autumn": "specific tip for this style in autumn — layering approach or colour palette shift",
+      "winter": "specific tip for this style in winter — how to keep the look without losing warmth"
     }
   }
 }
@@ -434,14 +449,18 @@ Generate a style report with exactly this JSON structure (respond with JSON only
 Rules:
 - Create exactly 3 outfits
 - Each outfit must have 3-4 items selected from the products provided above
+- Include the exact product URL for each item from the list above
 - Keep all recommendations within the customer's budget (${quizData.budget})
-- Make the intro and tips feel genuinely personal to their struggles and preferences
-- Be specific and direct — no generic advice
+- Every tip, do, don't, and piece of advice must be SPECIFIC and ACTIONABLE — never say "keep it simple" or "choose quality pieces". Say exactly what to do, how, and why.
+- Styling tips must reference the actual items in the outfit by name or category
+- Do's and Don'ts must teach the customer something real about how this style works — proportions, fit, layering, colour theory, fabric choices
+- Seasonal tips must be specific to this customer's style, not generic seasonal advice
+- Make the intro feel like it was written for this exact person based on their struggles and preferences
 - JSON only, no markdown, no preamble`;
 
   const message = await anthropic.messages.create({
     model: 'claude-sonnet-4-20250514',
-    max_tokens: 2000,
+    max_tokens: 3000,
     messages: [{ role: 'user', content: prompt }]
   });
 
@@ -679,21 +698,43 @@ async function buildPDF(content, quizData, products) {
         doc.roundedRect(PAD + IMG_PAD, imgY, IMG_W, IMG_W, 4).fill(CARD2);
       }
 
+      // Resolve product URL — from Claude response or fallback to products data
+      let productUrl = item.url || null;
+      if (!productUrl) {
+        for (const catItems of Object.values(products)) {
+          const match = catItems.find(p => p['Item Name'] === item.name);
+          if (match && match['Product URL']) { productUrl = match['Product URL']; break; }
+        }
+      }
+
       // Category label
       doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold')
          .text(item.category.toUpperCase(), tx, itemY + 10, { width: textW, lineBreak: false, characterSpacing: 1.5 });
 
-      // Item name — single line, hard truncated
-      doc.fontSize(10).fillColor(WHITE).font('Helvetica-Bold')
-         .text(nameStr, tx, itemY + 22, { width: textW, lineBreak: false });
+      // Item name — single line, hard truncated, linked if URL available
+      if (productUrl) {
+        doc.fontSize(10).fillColor(WHITE).font('Helvetica-Bold')
+           .text(nameStr, tx, itemY + 22, { width: textW, lineBreak: false, link: productUrl, underline: false });
+        // Subtle underline hint using a green tint on the name
+        doc.fontSize(10).fillColor('#6EE7B7').font('Helvetica-Bold')
+           .text('↗', tx + doc.widthOfString(nameStr, { fontSize: 10 }) + 4, itemY + 22, { lineBreak: false });
+      } else {
+        doc.fontSize(10).fillColor(WHITE).font('Helvetica-Bold')
+           .text(nameStr, tx, itemY + 22, { width: textW, lineBreak: false });
+      }
 
       // Why it works — single line, hard truncated
       doc.fontSize(8.5).fillColor(GREY).font('Helvetica')
          .text(whyStr, tx, itemY + 38, { width: textW, lineBreak: false });
 
-      // Price — right aligned
-      doc.fontSize(16).fillColor(GREEN).font('Helvetica-Bold')
-         .text(item.price, priceColX, itemY + 14, { width: 80, align: 'right', lineBreak: false });
+      // Price — right aligned, also linked
+      if (productUrl) {
+        doc.fontSize(16).fillColor(GREEN).font('Helvetica-Bold')
+           .text(item.price, priceColX, itemY + 14, { width: 80, align: 'right', lineBreak: false, link: productUrl });
+      } else {
+        doc.fontSize(16).fillColor(GREEN).font('Helvetica-Bold')
+           .text(item.price, priceColX, itemY + 14, { width: 80, align: 'right', lineBreak: false });
+      }
 
       // Brand — right aligned
       doc.fontSize(8).fillColor(GREY).font('Helvetica')
