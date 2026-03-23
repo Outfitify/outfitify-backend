@@ -792,67 +792,72 @@ async function buildPDF(content, quizData, products) {
   doc.fontSize(12).fillColor(GREEN).font('Helvetica-Oblique').text(content.styleType, PAD, 88);
 
   // ── Style guide helpers ──
-  // Returns height of text block at given font size and width
-  function textH(str, fontSize, width) {
-    doc.fontSize(fontSize).font('Helvetica');
-    return doc.heightOfString(str, { width, lineGap: 2 });
-  }
-  function textHBold(str, fontSize, width) {
-    doc.fontSize(fontSize).font('Helvetica-Bold');
+  // Measure text height WITHOUT moving PDFKit's cursor (use absolute positioning always)
+  function textH(str, fontSize, fontName, width) {
+    doc.fontSize(fontSize).font(fontName || 'Helvetica');
     return doc.heightOfString(str, { width, lineGap: 2 });
   }
 
   const colW = (IW - 10) / 2;
-  const innerW = colW - 24;
-  const VPAD = 10; // vertical padding inside each card
+  const innerW = colW - 26;
+  const VPAD = 8;
+  // Use smaller font sizes throughout to ensure everything fits on one page
+  const BODY_FS  = 8;   // do/don't text
+  const ESS_FS   = 9;   // essentials text
+  const SEAS_FS  = 8;   // seasonal tips text
 
-  // Pre-calculate card heights for do/don't so both columns align row-by-row
-  const doHeights  = content.styleGuide.doList.map(t  => textH(`✓  ${t}`,  8.5, innerW) + VPAD * 2);
-  const dontHeights= content.styleGuide.dontList.map(t => textH(`✗  ${t}`, 8.5, innerW) + VPAD * 2);
-  const rowHeights = doHeights.map((h, i) => Math.max(h, dontHeights[i] || 0, 32));
+  // Pre-calculate row heights for do/don't
+  const doHeights   = content.styleGuide.doList.map(t =>
+    textH(`✓  ${t}`, BODY_FS, 'Helvetica', innerW) + VPAD * 2);
+  const dontHeights = content.styleGuide.dontList.map(t =>
+    textH(`✗  ${t}`, BODY_FS, 'Helvetica', innerW) + VPAD * 2);
+  const rowHeights  = doHeights.map((h, i) => Math.max(h, dontHeights[i] || 0, 28));
 
   // Do's and Don'ts
   sectionLabel("DO'S & DON'TS", 132);
+  const col2X = PAD + colW + 10;
 
   // Column headers
-  doc.roundedRect(PAD,    154, colW, 24, 6).fill('#0D2418');
-  doc.fontSize(9).fillColor(GREEN).font('Helvetica-Bold').text('✓  DO',     PAD    + 12, 163);
-  const col2X = PAD + colW + 10;
-  doc.roundedRect(col2X, 154, colW, 24, 6).fill('#2A1010');
-  doc.fontSize(9).fillColor(RED).font('Helvetica-Bold').text("✗  DON'T",   col2X  + 12, 163);
+  doc.roundedRect(PAD,    154, colW, 22, 6).fill('#0D2418');
+  doc.fontSize(8.5).fillColor(GREEN).font('Helvetica-Bold').text('✓  DO',    PAD    + 12, 161, { lineBreak: false });
+  doc.roundedRect(col2X, 154, colW, 22, 6).fill('#2A1010');
+  doc.fontSize(8.5).fillColor(RED).font('Helvetica-Bold').text("✗  DON'T",  col2X  + 12, 161, { lineBreak: false });
 
-  // Rows — dynamic height, both columns same row height
-  let doY = 184;
+  // Rows — always use absolute Y so columns don't interfere with each other
+  let doY = 182;
   rowHeights.forEach((rowH, i) => {
     const doText   = content.styleGuide.doList[i]   || '';
     const dontText = content.styleGuide.dontList[i] || '';
+    const rowY = doY;
 
-    doc.roundedRect(PAD,    doY, colW, rowH, 5).fill(CARD2);
-    doc.fontSize(8.5).fillColor(MUTED).font('Helvetica')
-       .text(`✓  ${doText}`,   PAD    + 12, doY + VPAD, { width: innerW, lineGap: 2 });
+    doc.roundedRect(PAD,    rowY, colW, rowH, 5).fill(CARD2);
+    doc.fontSize(BODY_FS).fillColor(MUTED).font('Helvetica')
+       .text(`✓  ${doText}`, PAD + 12, rowY + VPAD, { width: innerW, lineGap: 2 });
 
-    doc.roundedRect(col2X, doY, colW, rowH, 5).fill(CARD2);
-    doc.fontSize(8.5).fillColor(MUTED).font('Helvetica')
-       .text(`✗  ${dontText}`, col2X + 12, doY + VPAD, { width: innerW, lineGap: 2 });
+    doc.roundedRect(col2X, rowY, colW, rowH, 5).fill(CARD2);
+    doc.fontSize(BODY_FS).fillColor(MUTED).font('Helvetica')
+       .text(`✗  ${dontText}`, col2X + 12, rowY + VPAD, { width: innerW, lineGap: 2 });
 
-    doY += rowH + 6;
+    doY = rowY + rowH + 5;
   });
 
-  // Essentials — dynamic card height per item
-  const essY = doY + 16;
+  // Essentials
+  const essY = doY + 12;
   sectionLabel('3 ESSENTIALS EVERY MAN IN YOUR STYLE NEEDS', essY);
-  let essItemY = essY + 20;
+  let essItemY = essY + 18;
   content.styleGuide.essentials.forEach((item, i) => {
-    const essTextW = IW - 60;
-    const h = Math.max(textHBold(item, 10, essTextW) + VPAD * 2, 36);
+    const essTextW = IW - 52;
+    const h = Math.max(textH(item, ESS_FS, 'Helvetica-Bold', essTextW) + VPAD * 2, 32);
     doc.roundedRect(PAD, essItemY, IW, h, 6).fill(CARD2);
-    doc.fontSize(18).fillColor(GREEN).font('Helvetica-Bold').text(`0${i + 1}`, PAD + 10, essItemY + (h - 22) / 2);
-    doc.fontSize(10).fillColor(WHITE).font('Helvetica-Bold').text(item, PAD + 46, essItemY + VPAD, { width: essTextW, lineGap: 2 });
-    essItemY += h + 6;
+    doc.fontSize(16).fillColor(GREEN).font('Helvetica-Bold')
+       .text(`0${i + 1}`, PAD + 10, essItemY + (h - 18) / 2, { lineBreak: false });
+    doc.fontSize(ESS_FS).fillColor(WHITE).font('Helvetica-Bold')
+       .text(item, PAD + 44, essItemY + VPAD, { width: essTextW, lineGap: 2 });
+    essItemY += h + 5;
   });
 
-  // Seasonal tips — dynamic card height
-  const seasY = essItemY + 16;
+  // Seasonal tips
+  const seasY = essItemY + 12;
   sectionLabel('SEASONAL TIPS', seasY);
   const seasons = [
     ['Spring', GREEN,      content.styleGuide.seasonalTips.spring],
@@ -860,23 +865,23 @@ async function buildPDF(content, quizData, products) {
     ['Autumn', '#D97706',  content.styleGuide.seasonalTips.autumn],
     ['Winter', PURPLE,     content.styleGuide.seasonalTips.winter],
   ];
-  // Calculate heights per season then pair rows
-  const seasH = seasons.map(([,, tip]) => textH(tip, 8.5, colW - 20) + 38);
-  const row0H = Math.max(seasH[0], seasH[1]);
-  const row1H = Math.max(seasH[2], seasH[3]);
+  const seasH   = seasons.map(([,, tip]) => textH(tip, SEAS_FS, 'Helvetica', colW - 22) + 34);
+  const seasRow0 = Math.max(seasH[0], seasH[1]);
+  const seasRow1 = Math.max(seasH[2], seasH[3]);
 
   seasons.forEach(([name, color, tip], i) => {
     const col = i % 2, row = Math.floor(i / 2);
-    const rowH = row === 0 ? row0H : row1H;
+    const rowH = row === 0 ? seasRow0 : seasRow1;
     const x = PAD + col * (colW + 10);
-    const y = seasY + 20 + (row === 0 ? 0 : row0H + 8);
+    const y = seasY + 18 + (row === 0 ? 0 : seasRow0 + 6);
     doc.roundedRect(x, y, colW, rowH, 6).fill(CARD2);
-    doc.fontSize(10).fillColor(color).font('Helvetica-Bold').text(name, x + 10, y + 10);
-    doc.fontSize(8.5).fillColor(GREY).font('Helvetica').text(tip, x + 10, y + 28, { width: colW - 20, lineGap: 2 });
+    doc.fontSize(9).fillColor(color).font('Helvetica-Bold').text(name, x + 10, y + 9, { lineBreak: false });
+    doc.fontSize(SEAS_FS).fillColor(GREY).font('Helvetica')
+       .text(tip, x + 10, y + 24, { width: colW - 22, lineGap: 2 });
   });
 
   // CTA
-  const ctaY = seasY + 20 + row0H + 8 + row1H + 14;
+  const ctaY = seasY + 18 + seasRow0 + 6 + seasRow1 + 12;
   doc.roundedRect(PAD, ctaY, IW, 52, 8).fill(CARD2);
   doc.roundedRect(PAD, ctaY, IW, 52, 8).strokeColor(GREEN).lineWidth(1).stroke();
   doc.fontSize(12).fillColor(WHITE).font('Helvetica-Bold')
