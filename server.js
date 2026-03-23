@@ -542,11 +542,12 @@ async function buildPDF(content, quizData, products) {
   ];
   insideItems.forEach(([num, title, desc], i) => {
     const col = i % 2, row = Math.floor(i / 2);
-    const x = PAD + col * (IW / 2 + 5), y = 472 + row * 58;
-    card(x, y, IW / 2 - 5, 50, CARD2);
-    doc.fontSize(20).fillColor(GREEN).font('Helvetica-Bold').text(num, x + 12, y + 15);
-    doc.fontSize(10).fillColor(WHITE).font('Helvetica-Bold').text(title, x + 46, y + 10);
-    doc.fontSize(8).fillColor(GREY).font('Helvetica').text(desc, x + 46, y + 25, { width: 170 });
+    const cardW = (IW - 10) / 2;
+    const x = PAD + col * (cardW + 10), y = 472 + row * 58;
+    card(x, y, cardW, 50, CARD2);
+    doc.fontSize(20).fillColor(GREEN).font('Helvetica-Bold').text(num, x + 12, y + 15, { width: 28 });
+    doc.fontSize(10).fillColor(WHITE).font('Helvetica-Bold').text(title, x + 46, y + 10, { width: cardW - 56 });
+    doc.fontSize(8).fillColor(GREY).font('Helvetica').text(desc, x + 46, y + 25, { width: cardW - 56 });
   });
 
   footer();
@@ -608,50 +609,82 @@ async function buildPDF(content, quizData, products) {
       }
     }));
 
-    // Items
+    // Helper: truncate string to fit within approximate char limit
+    function truncate(str, maxChars) {
+      if (!str) return '';
+      return str.length > maxChars ? str.slice(0, maxChars - 1).trimEnd() + '\u2026' : str;
+    }
+
+    // Items — fixed 72px card height, text manually truncated to single line
     let itemY = 255;
+    const CARD_H = 72;
+    const IMG_W = 60;
+    const IMG_PAD = 8;
     for (let itemIdx = 0; itemIdx < outfit.items.length; itemIdx++) {
       const item = outfit.items[itemIdx];
       const imgBuffer = imageBuffers[itemIdx];
 
-      // Item card
-      doc.roundedRect(PAD, itemY, IW, 66).fill(CARD);
-      doc.roundedRect(PAD, itemY, IW, 66).strokeColor(CARD2).lineWidth(1).stroke();
+      const tx = PAD + IMG_PAD + IMG_W + 10;
+      const priceColX = PAD + IW - 82;
+      const textW = priceColX - tx - 8;
 
-      // Image
+      // Approx max chars at each font size
+      const nameMaxChars = Math.floor(textW / 6.2);
+      const whyMaxChars  = Math.floor(textW / 5.3);
+      const nameStr = truncate(item.name, nameMaxChars);
+      const whyStr  = truncate(item.why,  whyMaxChars);
+
+      // Card background
+      doc.roundedRect(PAD, itemY, IW, CARD_H).fill(CARD);
+      doc.roundedRect(PAD, itemY, IW, CARD_H).strokeColor(CARD2).lineWidth(1).stroke();
+
+      // Image — vertically centred, clipped to rounded rect
+      const imgY = itemY + (CARD_H - IMG_W) / 2;
       if (imgBuffer) {
         try {
-          doc.image(imgBuffer, PAD + 8, itemY + 5, { width: 56, height: 56, cover: [56, 56] });
+          doc.save();
+          doc.roundedRect(PAD + IMG_PAD, imgY, IMG_W, IMG_W, 4).clip();
+          doc.image(imgBuffer, PAD + IMG_PAD, imgY, { width: IMG_W, height: IMG_W, cover: [IMG_W, IMG_W] });
+          doc.restore();
         } catch (e) {
-          doc.roundedRect(PAD + 8, itemY + 5, 56, 56, 6).fill(CARD2);
+          doc.roundedRect(PAD + IMG_PAD, imgY, IMG_W, IMG_W, 4).fill(CARD2);
         }
       } else {
-        doc.roundedRect(PAD + 8, itemY + 5, 56, 56, 6).fill(CARD2);
+        doc.roundedRect(PAD + IMG_PAD, imgY, IMG_W, IMG_W, 4).fill(CARD2);
       }
 
-      const tx = PAD + 74;
+      // Category label
       doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold')
-         .text(item.category.toUpperCase(), tx, itemY + 8, { characterSpacing: 1.5 });
+         .text(item.category.toUpperCase(), tx, itemY + 10, { width: textW, lineBreak: false, characterSpacing: 1.5 });
+
+      // Item name — single line, hard truncated
       doc.fontSize(10).fillColor(WHITE).font('Helvetica-Bold')
-         .text(item.name, tx, itemY + 20, { width: 300, lineGap: 2 });
+         .text(nameStr, tx, itemY + 22, { width: textW, lineBreak: false });
+
+      // Why it works — single line, hard truncated
       doc.fontSize(8.5).fillColor(GREY).font('Helvetica')
-         .text(item.why, tx, itemY + 38, { width: 300, lineGap: 2 });
+         .text(whyStr, tx, itemY + 38, { width: textW, lineBreak: false });
 
-      doc.fontSize(18).fillColor(GREEN).font('Helvetica-Bold')
-         .text(item.price, PAD + IW - 70, itemY + 12, { width: 60, align: 'right' });
+      // Price — right aligned
+      doc.fontSize(16).fillColor(GREEN).font('Helvetica-Bold')
+         .text(item.price, priceColX, itemY + 14, { width: 80, align: 'right', lineBreak: false });
+
+      // Brand — right aligned
       doc.fontSize(8).fillColor(GREY).font('Helvetica')
-         .text(item.brand, PAD + IW - 70, itemY + 36, { width: 60, align: 'right' });
+         .text(item.brand, priceColX, itemY + 37, { width: 80, align: 'right', lineBreak: false });
 
-      itemY += 74;
+      itemY += CARD_H + 6;
     }
 
-    // Styling tip
-    const tipY = itemY + 6;
-    lcard(PAD, tipY, IW, 44, PURPLE);
+    // Styling tip — positioned just below last item, max at bottom safe zone
+    const tipYRaw = itemY + 10;
+    const tipYMax = PH - 30 - 14 - 58;
+    const tipY = Math.min(tipYRaw, tipYMax);
+    lcard(PAD, tipY, IW, 52, PURPLE);
     doc.fontSize(7).fillColor(PURPLE).font('Helvetica-Bold')
-       .text('STYLING TIP', PAD + 14, tipY + 8, { characterSpacing: 2 });
+       .text('STYLING TIP', PAD + 14, tipY + 10, { characterSpacing: 2 });
     doc.fontSize(9.5).fillColor(MUTED).font('Helvetica-Oblique')
-       .text(outfit.stylingTip, PAD + 14, tipY + 22, { width: IW - 28 });
+       .text(outfit.stylingTip, PAD + 14, tipY + 26, { width: IW - 28, lineBreak: false });
 
     footer();
   }
