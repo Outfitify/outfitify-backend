@@ -56,7 +56,33 @@ app.use(express.json());
 // Stores quiz answers keyed by a session ID until payment completes
 const sessions = new Map();
 // Stores generated PDF download tokens after payment
-const downloads = new Map();
+// ── DISK-BACKED DOWNLOAD STORE ──
+// Persists token→pdfPath mappings to disk so server restarts don't lose them
+const DOWNLOADS_DIR = path.join(os.tmpdir(), 'outfitify-downloads');
+if (!fs.existsSync(DOWNLOADS_DIR)) fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
+
+function downloadsPath(sessionId) {
+  return path.join(DOWNLOADS_DIR, `${sessionId}.json`);
+}
+function saveDownload(sessionId, data) {
+  fs.writeFileSync(downloadsPath(sessionId), JSON.stringify(data));
+}
+function getDownload(sessionId) {
+  const p = downloadsPath(sessionId);
+  if (!fs.existsSync(p)) return null;
+  try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return null; }
+}
+function findDownloadByToken(token) {
+  if (!fs.existsSync(DOWNLOADS_DIR)) return null;
+  for (const file of fs.readdirSync(DOWNLOADS_DIR)) {
+    if (!file.endsWith('.json')) continue;
+    try {
+      const data = JSON.parse(fs.readFileSync(path.join(DOWNLOADS_DIR, file), 'utf8'));
+      if (data.token === token) return data;
+    } catch { /* skip */ }
+  }
+  return null;
+}
 
 // ════════════════════════════════════════
 // STEP 1 — Save quiz answers before payment
@@ -185,8 +211,9 @@ app.post('/webhook', async (req, res) => {
 app.get('/api/report-status/:sessionId', (req, res) => {
   const { sessionId } = req.params;
 
-  if (downloads.has(sessionId)) {
-    res.json({ ready: true, downloadToken: downloads.get(sessionId).token });
+  const dl = getDownload(sessionId);
+  if (dl) {
+    res.json({ ready: true, downloadToken: dl.token });
   } else {
     res.json({ ready: false });
   }
@@ -199,15 +226,14 @@ app.get('/api/download/:token', (req, res) => {
   const { token } = req.params;
 
   // Find download by token
-  for (const [sessionId, data] of downloads.entries()) {
-    if (data.token === token) {
-      if (!fs.existsSync(data.pdfPath)) {
-        return res.status(404).json({ error: 'File not found' });
-      }
-      res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Disposition', `attachment; filename="Outfitify-Style-Report.pdf"`);
-      return fs.createReadStream(data.pdfPath).pipe(res);
+  const data = findDownloadByToken(token);
+  if (data) {
+    if (!fs.existsSync(data.pdfPath)) {
+      return res.status(404).json({ error: 'File not found' });
     }
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="Outfitify-Style-Report.pdf"`);
+    return fs.createReadStream(data.pdfPath).pipe(res);
   }
 
   res.status(404).json({ error: 'Download link not found or expired' });
@@ -232,7 +258,7 @@ async function generateAndStoreReport(sessionId, quizData, userEmail) {
 
     // 4. Store download token
     const token = crypto.randomBytes(32).toString('hex');
-    downloads.set(sessionId, { token, pdfPath, email: userEmail, createdAt: Date.now() });
+    saveDownload(sessionId, { token, pdfPath, email: userEmail, createdAt: Date.now() });
 
     // 5. Send backup email via ZeptoMail
     const downloadUrl = `${process.env.BASE_URL}/api/download/${token}`;
