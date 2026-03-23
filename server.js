@@ -606,37 +606,62 @@ async function buildPDF(content, quizData, products) {
     bg();
     header(`Outfit ${i + 1} of ${content.outfits.length}`);
 
-    // Hero
-    doc.rect(0, 40, PW, 120).fill('#0C1622');
-    doc.moveTo(0, 160).lineTo(PW, 160).strokeColor(CARD2).lineWidth(1).stroke();
-
-    // Outfit number + name — clamp font size to prevent overflow
+    // Hero — dynamic height so long names never overlap vibe/tags
+    // Step 1: measure name at chosen font size
     const nameText = outfit.name.toUpperCase();
-    const nameFontSize = nameText.length > 20 ? 28 : nameText.length > 14 ? 34 : 40;
+    const prefixStr = `0${i + 1}  `;
+    const availW = IW - 10;
+    // Pick font size so name + prefix fits in one line; reduce until it does
+    let nameFontSize = 40;
+    for (const sz of [40, 34, 28, 22]) {
+      doc.fontSize(sz).font('Helvetica-Bold');
+      if (doc.widthOfString(prefixStr + nameText) <= availW) { nameFontSize = sz; break; }
+      nameFontSize = sz;
+    }
     doc.fontSize(nameFontSize).font('Helvetica-Bold');
-    doc.fillColor(GREEN).text(`0${i + 1}`, PAD, 58, { continued: true });
-    doc.fillColor(WHITE).text(`  ${nameText}`, { lineBreak: false });
-    doc.fontSize(11).fillColor(PURPLE).font('Helvetica-Oblique').text(outfit.vibe, PAD, 108);
+    const nameLineH = nameFontSize * 1.2;
+
+    // Hero block: 18px top padding + name + 8px gap + vibe(11px) + 8px + tags(20px) + 10px bottom
+    const heroH = 18 + nameLineH + 8 + 14 + 8 + 20 + 10;
+    const heroBottom = 40 + heroH;
+
+    doc.rect(0, 40, PW, heroH).fill('#0C1622');
+    doc.moveTo(0, heroBottom).lineTo(PW, heroBottom).strokeColor(CARD2).lineWidth(1).stroke();
+
+    const nameY = 40 + 18;
+    doc.fontSize(nameFontSize).font('Helvetica-Bold');
+    doc.fillColor(GREEN).text(prefixStr, PAD, nameY, { continued: true });
+    doc.fillColor(WHITE).text(nameText, { lineBreak: false });
+
+    const vibeY = nameY + nameLineH + 8;
+    doc.fontSize(11).fillColor(PURPLE).font('Helvetica-Oblique')
+       .text(outfit.vibe, PAD, vibeY, { width: IW, lineBreak: false });
 
     // Tags
+    const tagsY = vibeY + 14 + 8;
     let tagX = PAD;
     [outfit.occasion, outfit.season].forEach(tag => {
-      const tw = Math.min(tag.length * 6 + 20, 200);
-      doc.roundedRect(tagX, 122, tw, 20, 10).fill(CARD2);
-      doc.fontSize(8).fillColor(GREY).font('Helvetica').text(tag, tagX + 10, 128, { width: tw - 20 });
+      const tw = Math.min(tag.length * 6 + 20, 220);
+      doc.roundedRect(tagX, tagsY, tw, 20, 10).fill(CARD2);
+      doc.fontSize(8).fillColor(GREY).font('Helvetica')
+         .text(tag, tagX + 10, tagsY + 6, { width: tw - 20, lineBreak: false });
       tagX += tw + 8;
     });
 
-    // Why it works card
-    lcard(PAD, 172, IW, 54, GREEN);
+    // Why it works card — dynamic height
+    const whyCardTop = heroBottom + 12;
+    doc.fontSize(9.5).font('Helvetica');
+    const whyH = doc.heightOfString(outfit.whyItWorks, { width: IW - 28, lineGap: 3 }) + 28;
+    lcard(PAD, whyCardTop, IW, whyH, GREEN);
     doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold')
-       .text('WHY THIS WORKS FOR YOU', PAD + 14, 180, { characterSpacing: 2 });
+       .text('WHY THIS WORKS FOR YOU', PAD + 14, whyCardTop + 10, { characterSpacing: 2 });
     doc.fontSize(9.5).fillColor(MUTED).font('Helvetica')
-       .text(outfit.whyItWorks, PAD + 14, 194, { width: IW - 28, lineGap: 3 });
+       .text(outfit.whyItWorks, PAD + 14, whyCardTop + 24, { width: IW - 28, lineGap: 3 });
 
     // Items label
+    const itemsLabelY = whyCardTop + whyH + 12;
     doc.fontSize(7).fillColor(GREY).font('Helvetica-Bold')
-       .text('THE ITEMS', PAD, 240, { characterSpacing: 2 });
+       .text('THE ITEMS', PAD, itemsLabelY, { characterSpacing: 2 });
 
     // Pre-fetch all images for this outfit in parallel
     const imageBuffers = await Promise.all(outfit.items.map(async item => {
@@ -661,7 +686,7 @@ async function buildPDF(content, quizData, products) {
     }
 
     // Items — fixed 72px card height, text manually truncated to single line
-    let itemY = 255;
+    let itemY = itemsLabelY + 14;
     const CARD_H = 72;
     const IMG_W = 60;
     const IMG_PAD = 8;
@@ -712,16 +737,10 @@ async function buildPDF(content, quizData, products) {
          .text(item.category.toUpperCase(), tx, itemY + 10, { width: textW, lineBreak: false, characterSpacing: 1.5 });
 
       // Item name — single line, hard truncated, linked if URL available
-      if (productUrl) {
-        doc.fontSize(10).fillColor(WHITE).font('Helvetica-Bold')
-           .text(nameStr, tx, itemY + 22, { width: textW, lineBreak: false, link: productUrl, underline: false });
-        // Subtle underline hint using a green tint on the name
-        doc.fontSize(10).fillColor('#6EE7B7').font('Helvetica-Bold')
-           .text('↗', tx + doc.widthOfString(nameStr, { fontSize: 10 }) + 4, itemY + 22, { lineBreak: false });
-      } else {
-        doc.fontSize(10).fillColor(WHITE).font('Helvetica-Bold')
-           .text(nameStr, tx, itemY + 22, { width: textW, lineBreak: false });
-      }
+      // Linked names render in green to signal clickability
+      const nameColor = productUrl ? GREEN : WHITE;
+      doc.fontSize(10).fillColor(nameColor).font('Helvetica-Bold')
+         .text(nameStr, tx, itemY + 22, { width: textW, lineBreak: false, ...(productUrl ? { link: productUrl } : {}) });
 
       // Why it works — single line, hard truncated
       doc.fontSize(8.5).fillColor(GREY).font('Helvetica')
@@ -743,15 +762,18 @@ async function buildPDF(content, quizData, products) {
       itemY += CARD_H + 6;
     }
 
-    // Styling tip — positioned just below last item, max at bottom safe zone
+    // Styling tip — dynamic height, positioned just below last item
+    doc.fontSize(9.5).font('Helvetica-Oblique');
+    const tipTextH = doc.heightOfString(outfit.stylingTip, { width: IW - 28, lineGap: 2 });
+    const tipCardH = tipTextH + 30;
     const tipYRaw = itemY + 10;
-    const tipYMax = PH - 30 - 14 - 58;
+    const tipYMax = PH - 30 - 14 - tipCardH;
     const tipY = Math.min(tipYRaw, tipYMax);
-    lcard(PAD, tipY, IW, 52, PURPLE);
+    lcard(PAD, tipY, IW, tipCardH, PURPLE);
     doc.fontSize(7).fillColor(PURPLE).font('Helvetica-Bold')
        .text('STYLING TIP', PAD + 14, tipY + 10, { characterSpacing: 2 });
     doc.fontSize(9.5).fillColor(MUTED).font('Helvetica-Oblique')
-       .text(outfit.stylingTip, PAD + 14, tipY + 26, { width: IW - 28, lineBreak: false });
+       .text(outfit.stylingTip, PAD + 14, tipY + 24, { width: IW - 28, lineGap: 2 });
 
     footer();
   }
