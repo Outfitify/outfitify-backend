@@ -470,7 +470,7 @@ Rules:
 }
 
 // ════════════════════════════════════════
-// Build the PDF using PDFKit (dark theme)
+// Build the PDF using PDFKit (luxury dark theme)
 // ════════════════════════════════════════
 async function buildPDF(content, quizData, products) {
   const pdfPath = path.join(os.tmpdir(), `outfitify-${Date.now()}.pdf`);
@@ -478,18 +478,18 @@ async function buildPDF(content, quizData, products) {
   const stream = fs.createWriteStream(pdfPath);
   doc.pipe(stream);
 
-  // ── Design tokens ──
-  const BG      = '#0D1117';
-  const HEADER  = '#161B22';
-  const BORDER  = '#30363D';
-  const GREEN   = '#6EE7B7';
-  const PURPLE  = '#A78BFA';
-  const WHITE   = '#F0F6FC';
-  const GREY    = '#8B949E';
-  const MUTED   = '#C9D1D9';
-  const CARD    = '#161B22';
-  const CARD2   = '#21262D';
-  const RED     = '#F87171';
+  // ── Design tokens — luxury dark palette ──
+  const BG      = '#0A0A0A';   // near-black
+  const HEADER  = '#111111';   // header/footer bar
+  const BORDER  = '#2A2520';   // warm dark border
+  const GREEN   = '#B8A898';   // stone — primary accent (replaces green)
+  const PURPLE  = '#8C7B6B';   // darker stone — secondary accent (replaces purple)
+  const WHITE   = '#F2EDE6';   // warm off-white
+  const GREY    = '#7A6E66';   // warm mid-grey
+  const MUTED   = '#C8BFB5';   // warm muted text
+  const CARD    = '#141210';   // card background
+  const CARD2   = '#1C1916';   // slightly lighter card
+  const RED     = '#C4886A';   // warm terracotta (replaces red)
 
   const PW = 595, PH = 842;
   const PAD = 50;
@@ -499,37 +499,36 @@ async function buildPDF(content, quizData, products) {
   function bg() { doc.rect(0, 0, PW, PH).fill(BG); }
 
   function header(sub) {
-    doc.rect(0, 0, PW, 40).fill(HEADER);
-    doc.rect(0, 39, PW, 1).fill(BORDER);
-    doc.fontSize(9).fillColor(WHITE).font('Helvetica-Bold')
-       .text('OUTFITIFY', 0, 13, { width: PW, align: 'center', characterSpacing: 5 });
+    doc.rect(0, 0, PW, 36).fill(HEADER);
+    doc.rect(0, 35, PW, 1).fill(BORDER);
+    doc.fontSize(8).fillColor(WHITE).font('Helvetica-Bold')
+       .text('OUTFITIFY', 0, 11, { width: PW, align: 'center', characterSpacing: 6 });
     if (sub) {
-      doc.fontSize(7).fillColor(GREY).font('Helvetica')
-         .text(sub, 0, 25, { width: PW, align: 'center', characterSpacing: 1 });
+      doc.fontSize(6.5).fillColor(GREY).font('Helvetica')
+         .text(sub.toUpperCase(), 0, 22, { width: PW, align: 'center', characterSpacing: 2 });
     }
   }
 
   function footer() {
-    doc.rect(0, PH - 30, PW, 30).fill(HEADER);
-    doc.rect(0, PH - 30, PW, 1).fill(BORDER);
-    doc.fontSize(7.5).fillColor(GREY).font('Helvetica')
-       .text('outfitify.co.uk  ·  Making style effortless  ·  © Outfitify', 0, PH - 17, { width: PW, align: 'center' });
+    doc.rect(0, PH - 28, PW, 28).fill(HEADER);
+    doc.rect(0, PH - 28, PW, 1).fill(BORDER);
+    doc.fontSize(7).fillColor(GREY).font('Helvetica')
+       .text('OUTFITIFY.CO.UK  ·  MAKING STYLE EFFORTLESS', 0, PH - 15, { width: PW, align: 'center', characterSpacing: 1 });
   }
 
   function sectionLabel(text, y) {
-    doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold')
-       .text(text, PAD, y, { characterSpacing: 2 });
-    doc.moveTo(PAD, y + 13).lineTo(PAD + IW, y + 13).strokeColor(CARD2).lineWidth(1).stroke();
+    doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold')
+       .text(text, PAD, y, { characterSpacing: 3 });
+    doc.moveTo(PAD, y + 12).lineTo(PAD + IW, y + 12).strokeColor(BORDER).lineWidth(0.5).stroke();
   }
 
   function card(x, y, w, h, color) {
-    doc.roundedRect(x, y, w, h, 8).fill(color || CARD);
+    doc.rect(x, y, w, h).fill(color || CARD);
   }
 
   function lcard(x, y, w, h, accentColor) {
     doc.rect(x, y, w, h).fill(CARD);
-    doc.roundedRect(x, y, w, h, 6).fill(CARD);
-    doc.rect(x, y, 3, h).fill(accentColor || GREEN);
+    doc.rect(x, y, 2, h).fill(accentColor || GREEN);
   }
 
   // ════════════════════════════════════════
@@ -537,13 +536,13 @@ async function buildPDF(content, quizData, products) {
   // ════════════════════════════════════════
   bg();
   // Hero gradient block
-  doc.rect(0, 40, PW, 160).fill('#0C1622');
-  doc.moveTo(0, 200).lineTo(PW, 200).strokeColor(CARD2).lineWidth(1).stroke();
+  doc.rect(0, 40, PW, 160).fill('#0E0C0A');
+  doc.moveTo(0, 200).lineTo(PW, 200).strokeColor(BORDER).lineWidth(0.5).stroke();
 
   header();
 
   // Eyebrow
-  doc.moveTo(PAD, 65).lineTo(PAD + 20, 65).strokeColor(GREEN).lineWidth(2).stroke();
+  doc.moveTo(PAD, 65).lineTo(PAD + 24, 65).strokeColor(GREEN).lineWidth(0.75).stroke();
   doc.fontSize(9).fillColor(GREY).font('Helvetica')
      .text('Your Personalised Style Report', PAD + 28, 60);
 
@@ -570,7 +569,7 @@ async function buildPDF(content, quizData, products) {
   const sw = 56, swGap = 11;
   content.colourPalette.colours.forEach((hex, i) => {
     const x = PAD + i * (sw + swGap);
-    doc.roundedRect(x, 330, sw, sw, 8).fill(hex);
+    doc.rect(x, 330, sw, sw).fill(hex);
     doc.fontSize(8).fillColor(GREY).font('Helvetica')
        .text(content.colourPalette.labels[i] || '', x, 393, { width: sw, align: 'center' });
   });
@@ -625,8 +624,8 @@ async function buildPDF(content, quizData, products) {
     const heroH = 18 + nameLineH + 8 + 14 + 8 + 20 + 10;
     const heroBottom = 40 + heroH;
 
-    doc.rect(0, 40, PW, heroH).fill('#0C1622');
-    doc.moveTo(0, heroBottom).lineTo(PW, heroBottom).strokeColor(CARD2).lineWidth(1).stroke();
+    doc.rect(0, 40, PW, heroH).fill('#0E0C0A');
+    doc.moveTo(0, heroBottom).lineTo(PW, heroBottom).strokeColor(BORDER).lineWidth(0.5).stroke();
 
     const nameY = 40 + 18;
     doc.fontSize(nameFontSize).font('Helvetica-Bold');
@@ -642,7 +641,7 @@ async function buildPDF(content, quizData, products) {
     let tagX = PAD;
     [outfit.occasion, outfit.season].forEach(tag => {
       const tw = Math.min(tag.length * 6 + 20, 220);
-      doc.roundedRect(tagX, tagsY, tw, 20, 10).fill(CARD2);
+      doc.rect(tagX, tagsY, tw).fill(CARD2);
       doc.fontSize(8).fillColor(GREY).font('Helvetica')
          .text(tag, tagX + 10, tagsY + 6, { width: tw - 20, lineBreak: false });
       tagX += tw + 8;
@@ -713,14 +712,14 @@ async function buildPDF(content, quizData, products) {
       if (imgBuffer) {
         try {
           doc.save();
-          doc.roundedRect(PAD + IMG_PAD, imgY, IMG_W, IMG_W, 4).clip();
+          doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).clip();
           doc.image(imgBuffer, PAD + IMG_PAD, imgY, { width: IMG_W, height: IMG_W, cover: [IMG_W, IMG_W] });
           doc.restore();
         } catch (e) {
-          doc.roundedRect(PAD + IMG_PAD, imgY, IMG_W, IMG_W, 4).fill(CARD2);
+          doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).fill(CARD2);
         }
       } else {
-        doc.roundedRect(PAD + IMG_PAD, imgY, IMG_W, IMG_W, 4).fill(CARD2);
+        doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).fill(CARD2);
       }
 
       // Resolve product URL — from Claude response or fallback to products data
@@ -786,8 +785,8 @@ async function buildPDF(content, quizData, products) {
   header('Your Personal Style Guide');
 
   // Hero
-  doc.rect(0, 40, PW, 80).fill('#0C1622');
-  doc.moveTo(0, 120).lineTo(PW, 120).strokeColor(CARD2).lineWidth(1).stroke();
+  doc.rect(0, 40, PW, 80).fill('#0E0C0A');
+  doc.moveTo(0, 120).lineTo(PW, 120).strokeColor(BORDER).lineWidth(0.5).stroke();
   doc.fontSize(26).fillColor(WHITE).font('Helvetica-Bold').text('YOUR STYLE GUIDE', PAD, 55);
   doc.fontSize(12).fillColor(GREEN).font('Helvetica-Oblique').text(content.styleType, PAD, 88);
 
@@ -818,9 +817,9 @@ async function buildPDF(content, quizData, products) {
   const col2X = PAD + colW + 10;
 
   // Column headers
-  doc.roundedRect(PAD,    154, colW, 22, 6).fill('#0D2418');
+  doc.rect(PAD,    154, colW).fill('#0D2418');
   doc.fontSize(8.5).fillColor(GREEN).font('Helvetica-Bold').text('✓  DO',    PAD    + 12, 161, { lineBreak: false });
-  doc.roundedRect(col2X, 154, colW, 22, 6).fill('#2A1010');
+  doc.rect(col2X, 154, colW).fill('#2A1010');
   doc.fontSize(8.5).fillColor(RED).font('Helvetica-Bold').text("✗  DON'T",  col2X  + 12, 161, { lineBreak: false });
 
   // Rows — always use absolute Y so columns don't interfere with each other
@@ -830,11 +829,11 @@ async function buildPDF(content, quizData, products) {
     const dontText = content.styleGuide.dontList[i] || '';
     const rowY = doY;
 
-    doc.roundedRect(PAD,    rowY, colW, rowH, 5).fill(CARD2);
+    doc.rect(PAD,    rowY, colW, rowH).fill(CARD2);
     doc.fontSize(BODY_FS).fillColor(MUTED).font('Helvetica')
        .text(`✓  ${doText}`, PAD + 12, rowY + VPAD, { width: innerW, lineGap: 2 });
 
-    doc.roundedRect(col2X, rowY, colW, rowH, 5).fill(CARD2);
+    doc.rect(col2X, rowY, colW, rowH).fill(CARD2);
     doc.fontSize(BODY_FS).fillColor(MUTED).font('Helvetica')
        .text(`✗  ${dontText}`, col2X + 12, rowY + VPAD, { width: innerW, lineGap: 2 });
 
@@ -848,7 +847,7 @@ async function buildPDF(content, quizData, products) {
   content.styleGuide.essentials.forEach((item, i) => {
     const essTextW = IW - 52;
     const h = Math.max(textH(item, ESS_FS, 'Helvetica-Bold', essTextW) + VPAD * 2, 32);
-    doc.roundedRect(PAD, essItemY, IW, h, 6).fill(CARD2);
+    doc.rect(PAD, essItemY, IW, h).fill(CARD2);
     doc.fontSize(16).fillColor(GREEN).font('Helvetica-Bold')
        .text(`0${i + 1}`, PAD + 10, essItemY + (h - 18) / 2, { lineBreak: false });
     doc.fontSize(ESS_FS).fillColor(WHITE).font('Helvetica-Bold')
@@ -874,7 +873,7 @@ async function buildPDF(content, quizData, products) {
     const rowH = row === 0 ? seasRow0 : seasRow1;
     const x = PAD + col * (colW + 10);
     const y = seasY + 18 + (row === 0 ? 0 : seasRow0 + 6);
-    doc.roundedRect(x, y, colW, rowH, 6).fill(CARD2);
+    doc.rect(x, y, colW, rowH).fill(CARD2);
     doc.fontSize(9).fillColor(color).font('Helvetica-Bold').text(name, x + 10, y + 9, { lineBreak: false });
     doc.fontSize(SEAS_FS).fillColor(GREY).font('Helvetica')
        .text(tip, x + 10, y + 24, { width: colW - 22, lineGap: 2 });
@@ -882,8 +881,8 @@ async function buildPDF(content, quizData, products) {
 
   // CTA
   const ctaY = seasY + 18 + seasRow0 + 6 + seasRow1 + 12;
-  doc.roundedRect(PAD, ctaY, IW, 52, 8).fill(CARD2);
-  doc.roundedRect(PAD, ctaY, IW, 52, 8).strokeColor(GREEN).lineWidth(1).stroke();
+  doc.rect(PAD, ctaY, IW).fill(CARD2);
+  doc.rect(PAD, ctaY, IW).strokeColor(GREEN).lineWidth(1).stroke();
   doc.fontSize(12).fillColor(WHITE).font('Helvetica-Bold')
      .text('Want new outfits as your style evolves?', PAD, ctaY + 12, { width: IW, align: 'center' });
   doc.fontSize(10).fillColor(GREEN).font('Helvetica')
@@ -916,24 +915,25 @@ async function sendBackupEmail(toEmail, downloadUrl, styleType) {
     to: toEmail,
     subject: `Your ${styleType} Style Report is Ready 🔥`,
     html: `
-      <div style="background:#0E0E1A;padding:40px;font-family:sans-serif;max-width:600px;margin:0 auto">
-        <div style="background:#3D3F8F;padding:24px;border-radius:12px;text-align:center;margin-bottom:24px">
-          <h1 style="color:#4CAF8A;font-size:24px;letter-spacing:3px;margin:0">OUTFITIFY</h1>
-          <p style="color:#E8E8F0;margin:8px 0 0">Your Personalised Style Report</p>
+      <div style="background:#0A0A0A;padding:0;font-family:Arial,sans-serif;max-width:600px;margin:0 auto;border:1px solid #2A2520">
+        <div style="background:#111111;padding:28px 40px;border-bottom:1px solid #2A2520;text-align:center">
+          <p style="color:#7A6E66;font-size:10px;letter-spacing:4px;margin:0 0 4px">YOUR PERSONALISED STYLE REPORT</p>
+          <h1 style="color:#F2EDE6;font-size:14px;letter-spacing:5px;margin:0;font-weight:600">OUTFITIFY</h1>
         </div>
-        <h2 style="color:white;font-size:22px">Your report is ready! 🎉</h2>
-        <p style="color:#888899;font-size:15px;line-height:1.6">
-          Your personalised <strong style="color:white">${styleType}</strong> style report has been generated. 
-          Click below to download your 5 complete outfits, colour palette, styling tips and more.
-        </p>
-        <a href="${downloadUrl}" style="display:block;background:#4CAF8A;color:white;text-align:center;padding:18px;border-radius:10px;font-size:16px;font-weight:bold;text-decoration:none;margin:24px 0">
-          Download My Style Report →
-        </a>
-        <p style="color:#888899;font-size:12px;text-align:center">
-          This link is unique to you. If you have any issues, reply to this email.
-        </p>
-        <div style="border-top:1px solid #222;padding-top:16px;text-align:center;margin-top:24px">
-          <p style="color:#888899;font-size:11px">Outfitify · Making style effortless · outfitify.co.uk</p>
+        <div style="padding:44px 40px">
+          <h2 style="color:#F2EDE6;font-size:26px;font-weight:300;margin:0 0 12px;line-height:1.2">Your report is ready.</h2>
+          <p style="color:#7A6E66;font-size:14px;line-height:1.7;margin:0 0 32px">
+            Your personalised <span style="color:#C8BFB5">${styleType}</span> style report has been generated — 3 complete outfits, your colour palette, and a personal style guide built around you.
+          </p>
+          <a href="${downloadUrl}" style="display:block;background:#F2EDE6;color:#0A0A0A;text-align:center;padding:16px;font-size:11px;font-weight:600;letter-spacing:3px;text-decoration:none;margin:0 0 32px;text-transform:uppercase">
+            DOWNLOAD MY STYLE REPORT →
+          </a>
+          <p style="color:#4A4440;font-size:12px;text-align:center;border-top:1px solid #2A2520;padding-top:20px;margin:0">
+            This link is unique to you. If you have any issues, reply to this email.
+          </p>
+        </div>
+        <div style="background:#111111;border-top:1px solid #2A2520;padding:16px 40px;text-align:center">
+          <p style="color:#4A4440;font-size:10px;letter-spacing:2px;margin:0">OUTFITIFY · MAKING STYLE EFFORTLESS · OUTFITIFY.CO.UK</p>
         </div>
       </div>
     `
