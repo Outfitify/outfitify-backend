@@ -442,7 +442,13 @@ Generate a style report with exactly this JSON structure (respond with JSON only
       "summer": "specific tip for this style in summer — fabrics, colours, or silhouette adjustments",
       "autumn": "specific tip for this style in autumn — layering approach or colour palette shift",
       "winter": "specific tip for this style in winter — how to keep the look without losing warmth"
-    }
+    },
+    "whereToShop": [
+      {
+        "brand": "Brand name",
+        "why": "One specific sentence on why this brand suits their style type and budget — mention price range, aesthetic or specific product type they do well"
+      }
+    ]
   }
 }
 
@@ -456,11 +462,12 @@ Rules:
 - Do's and Don'ts must teach the customer something real about how this style works — proportions, fit, layering, colour theory, fabric choices
 - Seasonal tips must be specific to this customer's style, not generic seasonal advice
 - Make the intro feel like it was written for this exact person based on their struggles and preferences
+- whereToShop must contain exactly 5 brands suited to their style type and budget — real UK-accessible brands only (e.g. ASOS, Zara, H&M, Uniqlo, & Other Stories, COS, Pull&Bear, Bershka, Urban Outfitters, ARKET, Reiss, River Island, Next, Topman, Weekday, Carhartt WIP, Stone Island, Nike, Adidas, New Balance etc). Each brand must have a specific one-line reason tailored to their style and budget — not just "great quality"
 - JSON only, no markdown, no preamble`;
 
   const message = await anthropic.messages.create({
     model: 'claude-sonnet-4-20250514',
-    max_tokens: 3000,
+    max_tokens: 3500,
     messages: [{ role: 'user', content: prompt }]
   });
 
@@ -879,8 +886,37 @@ async function buildPDF(content, quizData, products) {
        .text(tip, x + 10, y + 24, { width: colW - 22, lineGap: 2 });
   });
 
+  // Where to shop
+  const shopY = seasY + 18 + seasRow0 + 6 + seasRow1 + 14;
+  sectionLabel('WHERE TO SHOP', shopY);
+
+  const shopItems = content.styleGuide.whereToShop || [];
+  const shopColW = (IW - 8) / 2;
+  let shopRowY = shopY + 18;
+
+  // Render in two columns
+  shopItems.forEach((shop, i) => {
+    const col = i % 2;
+    const sx = PAD + col * (shopColW + 8);
+    // If starting a new row (col === 0 and not first), advance Y
+    if (col === 0 && i > 0) shopRowY += 44;
+    const sh = Math.max(textH(shop.why, 7.5, 'Helvetica', shopColW - 24) + 26, 42);
+    // Only advance row Y on col 0 items after first
+    const cardY = (col === 0) ? shopRowY : shopRowY;
+    doc.rect(sx, cardY, shopColW, sh).fill(CARD);
+    doc.rect(sx, cardY, 2, sh).fill(GREEN);
+    doc.fontSize(8).fillColor(WHITE).font('Helvetica-Bold')
+       .text(shop.brand, sx + 10, cardY + 8, { width: shopColW - 20, lineBreak: false });
+    doc.fontSize(7.5).fillColor(GREY).font('Helvetica')
+       .text(shop.why, sx + 10, cardY + 20, { width: shopColW - 20, lineGap: 1.5 });
+    // Advance row after each pair
+    if (col === 1) shopRowY += sh + 6;
+  });
+  // If odd number, advance for last single item
+  if (shopItems.length % 2 !== 0) shopRowY += 44;
+
   // CTA
-  const ctaY = seasY + 18 + seasRow0 + 6 + seasRow1 + 12;
+  const ctaY = shopRowY + 14;
   doc.rect(PAD, ctaY, IW, 52).fill(CARD2);
   doc.rect(PAD, ctaY, IW, 52).strokeColor(GREEN).lineWidth(0.5).stroke();
   doc.fontSize(12).fillColor(WHITE).font('Helvetica-Bold')
