@@ -442,10 +442,10 @@ Generate a style report with exactly this JSON structure (respond with JSON only
       "winter": "specific tip for this style in winter — how to keep the look without losing warmth"
     },
     "whereToShop": [
-      {
-        "brand": "Brand name",
-        "why": "One specific sentence on why this brand suits their style type and budget — mention price range, aesthetic or specific product type they do well"
-      }
+      { "brand": "Brand 1", "why": "specific reason for their style and budget" },
+      { "brand": "Brand 2", "why": "specific reason for their style and budget" },
+      { "brand": "Brand 3", "why": "specific reason for their style and budget" },
+      { "brand": "Brand 4", "why": "specific reason for their style and budget" }
     ]
   }
 }
@@ -460,7 +460,7 @@ Rules:
 - Do's and Don'ts must teach the customer something real about how this style works — proportions, fit, layering, colour theory, fabric choices
 - Seasonal tips must be specific to this customer's style, not generic seasonal advice
 - Make the intro feel like it was written for this exact person based on their struggles and preferences
-- whereToShop must contain exactly 5 brands suited to their style type and budget — real UK-accessible brands only (e.g. ASOS, Zara, H&M, Uniqlo, & Other Stories, COS, Pull&Bear, Bershka, Urban Outfitters, ARKET, Reiss, River Island, Next, Topman, Weekday, Carhartt WIP, Stone Island, Nike, Adidas, New Balance etc). Each brand must have a specific one-line reason tailored to their style and budget — not just "great quality"
+- whereToShop must contain exactly 4 brands suited to their style type and budget — real UK-accessible brands only (e.g. ASOS, Zara, H&M, Uniqlo, & Other Stories, COS, Pull&Bear, Bershka, Urban Outfitters, ARKET, Reiss, River Island, Next, Topman, Weekday, Carhartt WIP, Stone Island, Nike, Adidas, New Balance etc). Each brand must have a specific one-line reason tailored to their style and budget — not just "great quality"
 - JSON only, no markdown, no preamble`;
 
   const message = await anthropic.messages.create({
