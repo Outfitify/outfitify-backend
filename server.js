@@ -348,14 +348,12 @@ async function fetchProducts(style, budget, colours) {
     byCategory[cat].push(p);
   });
 
-  // Select products for 3 outfits (top, bottoms, shoes, optional layer per outfit)
+  // Select products — pure random shuffle so every report gets different items
   const categories = ['Top', 'Bottoms', 'Shoes', 'Hoodie/Jacket'];
   const selected = {};
   categories.forEach(cat => {
-    const items = byCategory[cat] || [];
-    // Sort by placement weight (higher = priority partners first)
-    items.sort((a, b) => (parseFloat(b['Placement Weight']) || 0) - (parseFloat(a['Placement Weight']) || 0));
-    selected[cat] = items.slice(0, 6); // take top 6 per category
+    const items = (byCategory[cat] || []).sort(() => Math.random() - 0.5);
+    selected[cat] = items.slice(0, 8); // send 8 random items per category to Claude
   });
 
   return selected;
@@ -886,37 +884,40 @@ async function buildPDF(content, quizData, products) {
        .text(tip, x + 10, y + 24, { width: colW - 22, lineGap: 2 });
   });
 
-  // Where to shop
+  // Where to shop — pre-calculate all row heights so nothing overflows
   const shopY = seasY + 18 + seasRow0 + 6 + seasRow1 + 14;
   sectionLabel('WHERE TO SHOP', shopY);
 
-  const shopItems = content.styleGuide.whereToShop || [];
+  const shopItems = (content.styleGuide.whereToShop || []).slice(0, 4); // max 4 to guarantee fit
   const shopColW = (IW - 8) / 2;
-  let shopRowY = shopY + 18;
 
-  // Render in two columns
+  // Pre-calculate heights per pair of cards
+  const shopRowHeights = [];
+  for (let i = 0; i < shopItems.length; i += 2) {
+    const hL = Math.max(textH(shopItems[i]?.why || '', 7.5, 'Helvetica', shopColW - 24) + 26, 40);
+    const hR = shopItems[i+1] ? Math.max(textH(shopItems[i+1].why || '', 7.5, 'Helvetica', shopColW - 24) + 26, 40) : 0;
+    shopRowHeights.push(Math.max(hL, hR));
+  }
+
+  let shopRowY = shopY + 18;
   shopItems.forEach((shop, i) => {
     const col = i % 2;
+    const row = Math.floor(i / 2);
+    const rowH = shopRowHeights[row];
     const sx = PAD + col * (shopColW + 8);
-    // If starting a new row (col === 0 and not first), advance Y
-    if (col === 0 && i > 0) shopRowY += 44;
-    const sh = Math.max(textH(shop.why, 7.5, 'Helvetica', shopColW - 24) + 26, 42);
-    // Only advance row Y on col 0 items after first
-    const cardY = (col === 0) ? shopRowY : shopRowY;
-    doc.rect(sx, cardY, shopColW, sh).fill(CARD);
-    doc.rect(sx, cardY, 2, sh).fill(GREEN);
+    const cardY = shopRowY + shopRowHeights.slice(0, row).reduce((a, b) => a + b + 6, 0);
+    doc.rect(sx, cardY, shopColW, rowH).fill(CARD);
+    doc.rect(sx, cardY, 2, rowH).fill(GREEN);
     doc.fontSize(8).fillColor(WHITE).font('Helvetica-Bold')
        .text(shop.brand, sx + 10, cardY + 8, { width: shopColW - 20, lineBreak: false });
     doc.fontSize(7.5).fillColor(GREY).font('Helvetica')
        .text(shop.why, sx + 10, cardY + 20, { width: shopColW - 20, lineGap: 1.5 });
-    // Advance row after each pair
-    if (col === 1) shopRowY += sh + 6;
   });
-  // If odd number, advance for last single item
-  if (shopItems.length % 2 !== 0) shopRowY += 44;
+
+  const shopTotalH = shopRowHeights.reduce((a, b) => a + b + 6, 0);
 
   // CTA
-  const ctaY = shopRowY + 14;
+  const ctaY = shopRowY + shopTotalH + 14;
   doc.rect(PAD, ctaY, IW, 52).fill(CARD2);
   doc.rect(PAD, ctaY, IW, 52).strokeColor(GREEN).lineWidth(0.5).stroke();
   doc.fontSize(12).fillColor(WHITE).font('Helvetica-Bold')
