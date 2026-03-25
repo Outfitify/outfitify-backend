@@ -641,7 +641,7 @@ async function buildPDF(content, quizData, products) {
     let tagX = PAD;
     [outfit.occasion, outfit.season].forEach(tag => {
       const tw = Math.min(tag.length * 6 + 20, 220);
-      doc.rect(tagX, tagsY, tw).fill(CARD2);
+      doc.rect(tagX, tagsY, tw, 20).fill(CARD2);
       doc.fontSize(8).fillColor(GREY).font('Helvetica')
          .text(tag, tagX + 10, tagsY + 6, { width: tw - 20, lineBreak: false });
       tagX += tw + 8;
@@ -817,9 +817,9 @@ async function buildPDF(content, quizData, products) {
   const col2X = PAD + colW + 10;
 
   // Column headers
-  doc.rect(PAD,    154, colW).fill('#0D2418');
+  doc.rect(PAD,    154, colW, 22).fill('#181410');
   doc.fontSize(8.5).fillColor(GREEN).font('Helvetica-Bold').text('✓  DO',    PAD    + 12, 161, { lineBreak: false });
-  doc.rect(col2X, 154, colW).fill('#2A1010');
+  doc.rect(col2X, 154, colW, 22).fill('#181410');
   doc.fontSize(8.5).fillColor(RED).font('Helvetica-Bold').text("✗  DON'T",  col2X  + 12, 161, { lineBreak: false });
 
   // Rows — always use absolute Y so columns don't interfere with each other
@@ -881,8 +881,8 @@ async function buildPDF(content, quizData, products) {
 
   // CTA
   const ctaY = seasY + 18 + seasRow0 + 6 + seasRow1 + 12;
-  doc.rect(PAD, ctaY, IW).fill(CARD2);
-  doc.rect(PAD, ctaY, IW).strokeColor(GREEN).lineWidth(1).stroke();
+  doc.rect(PAD, ctaY, IW, 52).fill(CARD2);
+  doc.rect(PAD, ctaY, IW, 52).strokeColor(GREEN).lineWidth(0.5).stroke();
   doc.fontSize(12).fillColor(WHITE).font('Helvetica-Bold')
      .text('Want new outfits as your style evolves?', PAD, ctaY + 12, { width: IW, align: 'center' });
   doc.fontSize(10).fillColor(GREEN).font('Helvetica')
