@@ -16,26 +16,18 @@ const app = express();
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 // ── GRACEFUL SHUTDOWN ──
-// Track in-flight report jobs so SIGTERM waits for them to finish
 let activeJobs = 0;
-let shuttingDown = false;
 
 process.on('SIGTERM', () => {
-  shuttingDown = true;
   console.log(`SIGTERM received. Active jobs: ${activeJobs}. Waiting before exit...`);
   const wait = () => {
-    if (activeJobs === 0) {
-      console.log('All jobs done, exiting.');
-      process.exit(0);
-    } else {
-      console.log(`Still waiting on ${activeJobs} job(s)...`);
-      setTimeout(wait, 5000);
-    }
+    if (activeJobs === 0) { console.log('All jobs done, exiting.'); process.exit(0); }
+    else { console.log(`Still waiting on ${activeJobs} job(s)...`); setTimeout(wait, 5000); }
   };
   wait();
 });
 
-// ── CORS: allow your Netlify domains ──
+// ── CORS ──
 app.use(cors({
   origin: [
     'https://outfitify.co.uk',
@@ -48,25 +40,16 @@ app.use(cors({
   ]
 }));
 
-// Raw body needed for Stripe webhook signature verification
 app.use('/webhook', express.raw({ type: 'application/json' }));
 app.use(express.json());
 
-// ── IN-MEMORY SESSION STORE ──
-// Stores quiz answers keyed by a session ID until payment completes
 const sessions = new Map();
-// Stores generated PDF download tokens after payment
-// ── DISK-BACKED DOWNLOAD STORE ──
-// Persists token→pdfPath mappings to disk so server restarts don't lose them
+
 const DOWNLOADS_DIR = path.join(os.tmpdir(), 'outfitify-downloads');
 if (!fs.existsSync(DOWNLOADS_DIR)) fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
 
-function downloadsPath(sessionId) {
-  return path.join(DOWNLOADS_DIR, `${sessionId}.json`);
-}
-function saveDownload(sessionId, data) {
-  fs.writeFileSync(downloadsPath(sessionId), JSON.stringify(data));
-}
+function downloadsPath(sessionId) { return path.join(DOWNLOADS_DIR, `${sessionId}.json`); }
+function saveDownload(sessionId, data) { fs.writeFileSync(downloadsPath(sessionId), JSON.stringify(data)); }
 function getDownload(sessionId) {
   const p = downloadsPath(sessionId);
   if (!fs.existsSync(p)) return null;
@@ -85,59 +68,30 @@ function findDownloadByToken(token) {
 }
 
 // ════════════════════════════════════════
-// STEP 1 — Save quiz answers before payment
-// Called by unlock page before redirecting to Stripe
+// STEP 1 — Save quiz answers
 // ════════════════════════════════════════
 app.post('/api/save-session', (req, res) => {
   const { style, budget, colours, struggles, brands, openToBrands, email } = req.body;
-
-  if (!style || !budget || !email) {
-    return res.status(400).json({ error: 'Missing required fields' });
-  }
-
+  if (!style || !budget || !email) return res.status(400).json({ error: 'Missing required fields' });
   const sessionId = crypto.randomBytes(16).toString('hex');
-  sessions.set(sessionId, {
-    style, budget, colours, struggles, brands, openToBrands, email,
-    createdAt: Date.now()
-  });
-
-  // Clean up sessions older than 2 hours
+  sessions.set(sessionId, { style, budget, colours, struggles, brands, openToBrands, email, createdAt: Date.now() });
   for (const [id, data] of sessions.entries()) {
     if (Date.now() - data.createdAt > 7200000) sessions.delete(id);
   }
-
   res.json({ sessionId });
 });
 
 // ════════════════════════════════════════
 // STEP 2 — Create Stripe Checkout Session
-// Quiz data is stored in Stripe metadata so it
-// survives server restarts before webhook fires
 // ════════════════════════════════════════
 app.post('/api/create-checkout', async (req, res) => {
   const { sessionId } = req.body;
-
-  if (!sessions.has(sessionId)) {
-    return res.status(400).json({ error: 'Session not found or expired' });
-  }
-
+  if (!sessions.has(sessionId)) return res.status(400).json({ error: 'Session not found or expired' });
   const quizData = sessions.get(sessionId);
-
   try {
     const checkoutSession = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
-      line_items: [{
-        price_data: {
-          currency: 'gbp',
-          product_data: {
-            name: 'Outfitify Personalised Style Report',
-            description: '5 complete outfits built around your style, budget & preferences — with product images and links',
-            images: ['https://outfitify.co.uk/assets/images/image04.png'],
-          },
-          unit_amount: 999, // £9.99 in pence
-        },
-        quantity: 1,
-      }],
+      line_items: [{ price_data: { currency: 'gbp', product_data: { name: 'Outfitify Personalised Style Report', description: '3 complete outfits built around your style, budget & preferences', images: ['https://outfitify.co.uk/assets/images/image04.png'] }, unit_amount: 999 }, quantity: 1 }],
       mode: 'payment',
       success_url: `${process.env.SUCCESS_URL || "https://success.outfitify.co.uk"}?token={CHECKOUT_SESSION_ID}&sid=${sessionId}`,
       cancel_url: `${process.env.UNLOCK_PAGE_URL}?sid=${sessionId}&cancelled=true`,
@@ -153,7 +107,6 @@ app.post('/api/create-checkout', async (req, res) => {
         email:        quizData.email        || '',
       },
     });
-
     res.json({ url: checkoutSession.url });
   } catch (err) {
     console.error('Stripe error:', err);
@@ -162,29 +115,22 @@ app.post('/api/create-checkout', async (req, res) => {
 });
 
 // ════════════════════════════════════════
-// STEP 3 — Stripe Webhook (payment confirmed)
-// Triggers PDF generation
-// Quiz data is read from Stripe metadata — not
-// in-memory sessions — so restarts don't break it
+// STEP 3 — Stripe Webhook
 // ════════════════════════════════════════
 app.post('/webhook', async (req, res) => {
   const sig = req.headers['stripe-signature'];
   let event;
-
   try {
     event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
   } catch (err) {
     console.error('Webhook signature failed:', err.message);
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
-
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
     const sessionId = session.metadata.sessionId;
     const userEmail = session.customer_email;
-
     console.log(`Webhook received for session ${sessionId}, email: ${userEmail}`);
-
     const quizData = {
       style:        session.metadata.style,
       budget:       session.metadata.budget,
@@ -194,78 +140,51 @@ app.post('/webhook', async (req, res) => {
       openToBrands: session.metadata.openToBrands,
       email:        session.metadata.email,
     };
-
-    // Fire and forget — generate PDF in background
     generateAndStoreReport(sessionId, quizData, userEmail).catch(err => {
       console.error(`Unhandled error in generateAndStoreReport for ${sessionId}:`, err);
     });
   }
-
   res.json({ received: true });
 });
 
 // ════════════════════════════════════════
 // STEP 4 — Poll for PDF readiness
-// Success page polls this until PDF is ready
 // ════════════════════════════════════════
 app.get('/api/report-status/:sessionId', (req, res) => {
-  const { sessionId } = req.params;
-
-  const dl = getDownload(sessionId);
-  if (dl) {
-    res.json({ ready: true, downloadToken: dl.token });
-  } else {
-    res.json({ ready: false });
-  }
+  const dl = getDownload(req.params.sessionId);
+  if (dl) res.json({ ready: true, downloadToken: dl.token });
+  else res.json({ ready: false });
 });
 
 // ════════════════════════════════════════
-// STEP 5 — Serve the PDF download
+// STEP 5 — Serve PDF download
 // ════════════════════════════════════════
 app.get('/api/download/:token', (req, res) => {
-  const { token } = req.params;
-
-  // Find download by token
-  const data = findDownloadByToken(token);
+  const data = findDownloadByToken(req.params.token);
   if (data) {
-    if (!fs.existsSync(data.pdfPath)) {
-      return res.status(404).json({ error: 'File not found' });
-    }
+    if (!fs.existsSync(data.pdfPath)) return res.status(404).json({ error: 'File not found' });
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="Outfitify-Style-Report.pdf"`);
     return fs.createReadStream(data.pdfPath).pipe(res);
   }
-
   res.status(404).json({ error: 'Download link not found or expired' });
 });
 
 // ════════════════════════════════════════
-// CORE: Generate personalised PDF report
+// CORE: Generate report
 // ════════════════════════════════════════
 async function generateAndStoreReport(sessionId, quizData, userEmail) {
   activeJobs++;
   console.log(`Generating report for session ${sessionId}... (active jobs: ${activeJobs})`);
-
   try {
-    // 1. Fetch products from Google Sheet
     const products = await fetchProducts(quizData.style, quizData.budget, quizData.colours);
-
-    // 2. Generate personalised content via Claude
     const reportContent = await generateReportContent(quizData, products);
-
-    // 3. Build PDF
     const pdfPath = await buildPDF(reportContent, quizData, products);
-
-    // 4. Store download token
     const token = crypto.randomBytes(32).toString('hex');
     saveDownload(sessionId, { token, pdfPath, email: userEmail, createdAt: Date.now() });
-
-    // 5. Send backup email via ZeptoMail
     const downloadUrl = `${process.env.BASE_URL}/api/download/${token}`;
     await sendBackupEmail(userEmail, downloadUrl, quizData.style);
-
     console.log(`Report ready for session ${sessionId}`);
-
   } catch (err) {
     console.error(`Report generation failed for ${sessionId}:`, err);
   } finally {
@@ -275,103 +194,60 @@ async function generateAndStoreReport(sessionId, quizData, userEmail) {
 }
 
 // ════════════════════════════════════════
-// Fetch & filter products from Google Sheet
+// Fetch products from Google Sheet
 // ════════════════════════════════════════
 async function fetchProducts(style, budget, colours) {
   const auth = new google.auth.GoogleAuth({
     credentials: JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON),
     scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
   });
-
   const sheets = google.sheets({ version: 'v4', auth });
-  const response = await sheets.spreadsheets.values.get({
-    spreadsheetId: process.env.GOOGLE_SHEET_ID,
-    range: 'Sheet1!A:M',
-  });
+  const response = await sheets.spreadsheets.values.get({ spreadsheetId: process.env.GOOGLE_SHEET_ID, range: 'Sheet1!A:M' });
 
   const rows = response.data.values;
   const headers = rows[0];
-  const products = rows.slice(1).map(row => {
-    const obj = {};
-    headers.forEach((h, i) => obj[h] = row[i] || '');
-    return obj;
-  });
+  const products = rows.slice(1).map(row => { const obj = {}; headers.forEach((h, i) => obj[h] = row[i] || ''); return obj; });
 
-  // Parse budget to max price
-  const budgetMap = {
-    'Under £50': 50,
-    '£51-100': 100,
-    '£101-150': 150,
-    '£151-200': 200,
-    '£200+': 9999
-  };
+  const budgetMap = { 'Under £50': 50, '£51-100': 100, '£101-150': 150, '£151-200': 200, '£200+': 9999 };
   const maxPrice = budgetMap[budget] || 100;
 
-  // Map style to sheet style values — must match column I exactly
   const styleMap = {
-    'everyday fits':           'Everyday Fits',
-    'everyday fit':            'Everyday Fits',
-    'streetwear':              'Streetwear',
-    'smart casual':            'Smart Casual/Workwear',
-    'smart casual / workwear': 'Smart Casual/Workwear',
-    'date night':              'Date Night/Going Out',
-    'date night / going out':  'Date Night/Going Out',
-    'active':                  'Active/Gym wear',
-    'active/gym wear':         'Active/Gym wear',
-    'active gym wear':         'Active/Gym wear',
+    'everyday fits': 'Everyday Fits', 'everyday fit': 'Everyday Fits',
+    'streetwear': 'Streetwear',
+    'smart casual': 'Smart Casual/Workwear', 'smart casual / workwear': 'Smart Casual/Workwear',
+    'date night': 'Date Night/Going Out', 'date night / going out': 'Date Night/Going Out',
+    'active': 'Active/Gym wear', 'active/gym wear': 'Active/Gym wear', 'active gym wear': 'Active/Gym wear',
   };
   const sheetStyle = styleMap[(style || '').toLowerCase()] || 'Everyday Fits';
-
   console.log(`[fetchProducts] raw style="${style}" → sheetStyle="${sheetStyle}" budget=${maxPrice}`);
 
-  // Filter by style and budget — no fallback to avoid mixing styles
   const filtered = products.filter(p => {
     const price = parseFloat(p['Price']) || 0;
-    const matchesStyle = (p['Style'] || '').trim() === sheetStyle;
-    const matchesBudget = price <= maxPrice;
-    return matchesStyle && matchesBudget && p['Item Name'];
+    return (p['Style'] || '').trim() === sheetStyle && price <= maxPrice && p['Item Name'];
   });
-
   console.log(`[fetchProducts] filtered ${filtered.length} products for style="${sheetStyle}"`);
 
-  // If nothing matched, fall back to all products within budget
-  const pool = filtered.length >= 6 ? filtered : products.filter(p => {
-    const price = parseFloat(p['Price']) || 0;
-    return price <= maxPrice && p['Item Name'];
-  });
+  const pool = filtered.length >= 6 ? filtered : products.filter(p => (parseFloat(p['Price']) || 0) <= maxPrice && p['Item Name']);
 
-  // Group by category
   const byCategory = {};
-  pool.forEach(p => {
-    const cat = p['Category'] || 'Other';
-    if (!byCategory[cat]) byCategory[cat] = [];
-    byCategory[cat].push(p);
-  });
+  pool.forEach(p => { const cat = p['Category'] || 'Other'; if (!byCategory[cat]) byCategory[cat] = []; byCategory[cat].push(p); });
 
-  // Select products — pure random shuffle so every report gets different items
   const categories = ['Top', 'Bottoms', 'Shoes', 'Hoodie/Jacket'];
   const selected = {};
   categories.forEach(cat => {
     const items = (byCategory[cat] || []).sort(() => Math.random() - 0.5);
-    selected[cat] = items.slice(0, 8); // send 8 random items per category to Claude
+    selected[cat] = items.slice(0, 8);
   });
-
   return selected;
 }
 
 // ════════════════════════════════════════
-// Generate personalised content via Claude
+// Generate content via Claude
 // ════════════════════════════════════════
 async function generateReportContent(quizData, products) {
-  // Build a concise product list to send to Claude
   const productSummary = {};
   for (const [cat, items] of Object.entries(products)) {
-    productSummary[cat] = items.slice(0, 4).map(p => ({
-      name: p['Item Name'],
-      brand: p['Brand'],
-      price: `£${p['Price']}`,
-      url: p['Product URL']
-    }));
+    productSummary[cat] = items.slice(0, 4).map(p => ({ name: p['Item Name'], brand: p['Brand'], price: `£${p['Price']}`, url: p['Product URL'] }));
   }
 
   const prompt = `You are Outfitify's AI stylist. Create a personalised menswear style report for a customer.
@@ -413,7 +289,7 @@ Generate a style report with exactly this JSON structure (respond with JSON only
           "why": "one sentence why this works for their style — be specific about fit, fabric, or detail, not generic praise"
         }
       ],
-      "stylingTip": "a specific, actionable tip about how to wear this exact outfit — e.g. roll hems, tuck/untuck, which layer to leave open, what to add or remove. Must reference the actual items in the outfit.",
+      "stylingTip": "a specific, actionable tip about how to wear this exact outfit — must reference the actual items in the outfit",
       "whyItWorks": "2 sentences explaining why this outfit works for their profile — reference their specific struggle or preference"
     }
   ],
@@ -442,10 +318,10 @@ Generate a style report with exactly this JSON structure (respond with JSON only
       "winter": "specific tip for this style in winter — how to keep the look without losing warmth"
     },
     "whereToShop": [
-      { "brand": "Brand 1", "why": "specific reason for their style and budget" },
-      { "brand": "Brand 2", "why": "specific reason for their style and budget" },
-      { "brand": "Brand 3", "why": "specific reason for their style and budget" },
-      { "brand": "Brand 4", "why": "specific reason for their style and budget" }
+      { "brand": "Brand 1", "why": "One to two sentences — why this brand suits their style type and budget specifically" },
+      { "brand": "Brand 2", "why": "One to two sentences — why this brand suits their style type and budget specifically" },
+      { "brand": "Brand 3", "why": "One to two sentences — why this brand suits their style type and budget specifically" },
+      { "brand": "Brand 4", "why": "One to two sentences — why this brand suits their style type and budget specifically" }
     ]
   }
 }
@@ -455,12 +331,12 @@ Rules:
 - Each outfit must have 3-4 items selected from the products provided above
 - Include the exact product URL for each item from the list above
 - Keep all recommendations within the customer's budget (${quizData.budget})
-- Every tip, do, don't, and piece of advice must be SPECIFIC and ACTIONABLE — never say "keep it simple" or "choose quality pieces". Say exactly what to do, how, and why.
+- Every tip, do, don't, and piece of advice must be SPECIFIC and ACTIONABLE
 - Styling tips must reference the actual items in the outfit by name or category
-- Do's and Don'ts must teach the customer something real about how this style works — proportions, fit, layering, colour theory, fabric choices
-- Seasonal tips must be specific to this customer's style, not generic seasonal advice
-- Make the intro feel like it was written for this exact person based on their struggles and preferences
-- whereToShop must contain exactly 4 brands suited to their style type and budget — real UK-accessible brands only (e.g. ASOS, Zara, H&M, Uniqlo, COS, Pull&Bear, Bershka, Urban Outfitters, ARKET, Reiss, River Island, Next, Topman, Weekday, Carhartt WIP, Stone Island, Nike, Adidas, New Balance etc). Each why must be a MAXIMUM of 12 words — short and punchy, not a full sentence
+- Do's and Don'ts must teach the customer something real about proportions, fit, layering, colour theory, fabric choices
+- Seasonal tips must be specific to this customer's style
+- Make the intro feel written for this exact person based on their struggles and preferences
+- whereToShop must contain exactly 4 brands — real UK-accessible brands only (e.g. ASOS, Zara, H&M, Uniqlo, COS, Pull&Bear, Bershka, Urban Outfitters, ARKET, Reiss, River Island, Next, Topman, Weekday, Carhartt WIP, Stone Island, Nike, Adidas, New Balance). Each why should be 1-2 sentences tailored to their specific style and budget
 - JSON only, no markdown, no preamble`;
 
   const message = await anthropic.messages.create({
@@ -475,7 +351,7 @@ Rules:
 }
 
 // ════════════════════════════════════════
-// Build the PDF using PDFKit (luxury dark theme)
+// Build the PDF
 // ════════════════════════════════════════
 async function buildPDF(content, quizData, products) {
   const pdfPath = path.join(os.tmpdir(), `outfitify-${Date.now()}.pdf`);
@@ -483,24 +359,23 @@ async function buildPDF(content, quizData, products) {
   const stream = fs.createWriteStream(pdfPath);
   doc.pipe(stream);
 
-  // ── Design tokens — luxury dark palette ──
-  const BG      = '#0A0A0A';   // near-black
-  const HEADER  = '#111111';   // header/footer bar
-  const BORDER  = '#2A2520';   // warm dark border
-  const GREEN   = '#B8A898';   // stone — primary accent (replaces green)
-  const PURPLE  = '#8C7B6B';   // darker stone — secondary accent (replaces purple)
-  const WHITE   = '#F2EDE6';   // warm off-white
-  const GREY    = '#7A6E66';   // warm mid-grey
-  const MUTED   = '#C8BFB5';   // warm muted text
-  const CARD    = '#141210';   // card background
-  const CARD2   = '#1C1916';   // slightly lighter card
-  const RED     = '#C4886A';   // warm terracotta (replaces red)
+  // ── Design tokens ──
+  const BG     = '#0A0A0A';
+  const HEADER = '#111111';
+  const BORDER = '#2A2520';
+  const GREEN  = '#B8A898';
+  const PURPLE = '#8C7B6B';
+  const WHITE  = '#F2EDE6';
+  const GREY   = '#7A6E66';
+  const MUTED  = '#C8BFB5';
+  const CARD   = '#141210';
+  const CARD2  = '#1C1916';
+  const RED    = '#C4886A';
 
   const PW = 595, PH = 842;
   const PAD = 50;
-  const IW = PW - PAD * 2; // inner width = 495
+  const IW = PW - PAD * 2;
 
-  // ── Helpers ──
   function bg() { doc.rect(0, 0, PW, PH).fill(BG); }
 
   function header(sub) {
@@ -527,67 +402,55 @@ async function buildPDF(content, quizData, products) {
     doc.moveTo(PAD, y + 12).lineTo(PAD + IW, y + 12).strokeColor(BORDER).lineWidth(0.5).stroke();
   }
 
-  function card(x, y, w, h, color) {
-    doc.rect(x, y, w, h).fill(color || CARD);
-  }
+  function card(x, y, w, h, color) { doc.rect(x, y, w, h).fill(color || CARD); }
 
   function lcard(x, y, w, h, accentColor) {
     doc.rect(x, y, w, h).fill(CARD);
     doc.rect(x, y, 2, h).fill(accentColor || GREEN);
   }
 
+  function textH(str, fontSize, fontName, width) {
+    doc.fontSize(fontSize).font(fontName || 'Helvetica');
+    return doc.heightOfString(str, { width, lineGap: 2 });
+  }
+
   // ════════════════════════════════════════
   // PAGE 1: COVER
   // ════════════════════════════════════════
   bg();
-  // Hero gradient block
   doc.rect(0, 40, PW, 160).fill('#0E0C0A');
   doc.moveTo(0, 200).lineTo(PW, 200).strokeColor(BORDER).lineWidth(0.5).stroke();
-
   header();
 
-  // Eyebrow
   doc.moveTo(PAD, 65).lineTo(PAD + 24, 65).strokeColor(GREEN).lineWidth(0.75).stroke();
-  doc.fontSize(9).fillColor(GREY).font('Helvetica')
-     .text('Your Personalised Style Report', PAD + 28, 60);
+  doc.fontSize(9).fillColor(GREY).font('Helvetica').text('Your Personalised Style Report', PAD + 28, 60);
 
-  // Big style name
   const parts = content.styleType.split(' ');
   const line1 = parts[0] || '';
   const line2 = parts.slice(1).join(' ') || '';
   doc.fontSize(52).fillColor(WHITE).font('Helvetica-Bold').text(line1.toUpperCase(), PAD, 78);
   doc.fontSize(52).fillColor(GREEN).font('Helvetica-Bold').text(line2.toUpperCase(), PAD, 128);
+  doc.fontSize(10).fillColor(GREY).font('Helvetica-Oblique').text(content.styleTagline, PAD, 186, { width: IW });
 
-  // Tagline
-  doc.fontSize(10).fillColor(GREY).font('Helvetica-Oblique')
-     .text(content.styleTagline, PAD, 186, { width: IW });
-
-  // About card
   lcard(PAD, 218, IW, 72, GREEN);
-  doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold')
-     .text('ABOUT YOUR REPORT', PAD + 14, 226, { characterSpacing: 2 });
-  doc.fontSize(10).fillColor(MUTED).font('Helvetica')
-     .text(content.intro, PAD + 14, 240, { width: IW - 28, lineGap: 3 });
+  doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold').text('ABOUT YOUR REPORT', PAD + 14, 226, { characterSpacing: 2 });
+  doc.fontSize(10).fillColor(MUTED).font('Helvetica').text(content.intro, PAD + 14, 240, { width: IW - 28, lineGap: 3 });
 
-  // Colour palette
   sectionLabel('YOUR COLOUR PALETTE', 308);
   const sw = 56, swGap = 11;
   content.colourPalette.colours.forEach((hex, i) => {
     const x = PAD + i * (sw + swGap);
     doc.rect(x, 330, sw, sw).fill(hex);
-    doc.fontSize(8).fillColor(GREY).font('Helvetica')
-       .text(content.colourPalette.labels[i] || '', x, 393, { width: sw, align: 'center' });
+    doc.fontSize(8).fillColor(GREY).font('Helvetica').text(content.colourPalette.labels[i] || '', x, 393, { width: sw, align: 'center' });
   });
-  doc.fontSize(10).fillColor(GREY).font('Helvetica')
-     .text(content.colourPalette.description, PAD, 410, { width: IW, lineGap: 3 });
+  doc.fontSize(10).fillColor(GREY).font('Helvetica').text(content.colourPalette.description, PAD, 410, { width: IW, lineGap: 3 });
 
-  // What's inside
   sectionLabel("WHAT'S INSIDE", 450);
   const insideItems = [
     ['3', 'Complete Outfits', 'Built around your style and budget'],
     ['✓', 'Real Product Links', 'Click straight through to buy'],
     ['5', 'Colour Palette', 'Your personal tones that always work'],
-    ['✓', 'Styling Tips', "Do's, don'ts & seasonal guidance"],
+    ['✓', 'Style Guide', "Do's, don'ts, essentials & where to shop"],
   ];
   insideItems.forEach(([num, title, desc], i) => {
     const col = i % 2, row = Math.floor(i / 2);
@@ -610,12 +473,9 @@ async function buildPDF(content, quizData, products) {
     bg();
     header(`Outfit ${i + 1} of ${content.outfits.length}`);
 
-    // Hero — dynamic height so long names never overlap vibe/tags
-    // Step 1: measure name at chosen font size
     const nameText = outfit.name.toUpperCase();
     const prefixStr = `0${i + 1}  `;
     const availW = IW - 10;
-    // Pick font size so name + prefix fits in one line; reduce until it does
     let nameFontSize = 40;
     for (const sz of [40, 34, 28, 22]) {
       doc.fontSize(sz).font('Helvetica-Bold');
@@ -624,8 +484,6 @@ async function buildPDF(content, quizData, products) {
     }
     doc.fontSize(nameFontSize).font('Helvetica-Bold');
     const nameLineH = nameFontSize * 1.2;
-
-    // Hero block: 18px top padding + name + 8px gap + vibe(11px) + 8px + tags(20px) + 10px bottom
     const heroH = 18 + nameLineH + 8 + 14 + 8 + 20 + 10;
     const heroBottom = 40 + heroH;
 
@@ -638,36 +496,27 @@ async function buildPDF(content, quizData, products) {
     doc.fillColor(WHITE).text(nameText, { lineBreak: false });
 
     const vibeY = nameY + nameLineH + 8;
-    doc.fontSize(11).fillColor(PURPLE).font('Helvetica-Oblique')
-       .text(outfit.vibe, PAD, vibeY, { width: IW, lineBreak: false });
+    doc.fontSize(11).fillColor(PURPLE).font('Helvetica-Oblique').text(outfit.vibe, PAD, vibeY, { width: IW, lineBreak: false });
 
-    // Tags
     const tagsY = vibeY + 14 + 8;
     let tagX = PAD;
     [outfit.occasion, outfit.season].forEach(tag => {
       const tw = Math.min(tag.length * 6 + 20, 220);
       doc.rect(tagX, tagsY, tw, 20).fill(CARD2);
-      doc.fontSize(8).fillColor(GREY).font('Helvetica')
-         .text(tag, tagX + 10, tagsY + 6, { width: tw - 20, lineBreak: false });
+      doc.fontSize(8).fillColor(GREY).font('Helvetica').text(tag, tagX + 10, tagsY + 6, { width: tw - 20, lineBreak: false });
       tagX += tw + 8;
     });
 
-    // Why it works card — dynamic height
     const whyCardTop = heroBottom + 12;
     doc.fontSize(9.5).font('Helvetica');
     const whyH = doc.heightOfString(outfit.whyItWorks, { width: IW - 28, lineGap: 3 }) + 28;
     lcard(PAD, whyCardTop, IW, whyH, GREEN);
-    doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold')
-       .text('WHY THIS WORKS FOR YOU', PAD + 14, whyCardTop + 10, { characterSpacing: 2 });
-    doc.fontSize(9.5).fillColor(MUTED).font('Helvetica')
-       .text(outfit.whyItWorks, PAD + 14, whyCardTop + 24, { width: IW - 28, lineGap: 3 });
+    doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold').text('WHY THIS WORKS FOR YOU', PAD + 14, whyCardTop + 10, { characterSpacing: 2 });
+    doc.fontSize(9.5).fillColor(MUTED).font('Helvetica').text(outfit.whyItWorks, PAD + 14, whyCardTop + 24, { width: IW - 28, lineGap: 3 });
 
-    // Items label
     const itemsLabelY = whyCardTop + whyH + 12;
-    doc.fontSize(7).fillColor(GREY).font('Helvetica-Bold')
-       .text('THE ITEMS', PAD, itemsLabelY, { characterSpacing: 2 });
+    doc.fontSize(7).fillColor(GREY).font('Helvetica-Bold').text('THE ITEMS', PAD, itemsLabelY, { characterSpacing: 2 });
 
-    // Pre-fetch all images for this outfit in parallel
     const imageBuffers = await Promise.all(outfit.items.map(async item => {
       let imageUrl = null;
       for (const catItems of Object.values(products)) {
@@ -678,41 +527,29 @@ async function buildPDF(content, quizData, products) {
       try {
         const imgResp = await axios.get(imageUrl, { responseType: 'arraybuffer', timeout: 5000 });
         return Buffer.from(imgResp.data);
-      } catch (e) {
-        return null;
-      }
+      } catch (e) { return null; }
     }));
 
-    // Helper: truncate string to fit within approximate char limit
     function truncate(str, maxChars) {
       if (!str) return '';
       return str.length > maxChars ? str.slice(0, maxChars - 1).trimEnd() + '\u2026' : str;
     }
 
-    // Items — fixed 72px card height, text manually truncated to single line
     let itemY = itemsLabelY + 14;
-    const CARD_H = 72;
-    const IMG_W = 60;
-    const IMG_PAD = 8;
+    const CARD_H = 72, IMG_W = 60, IMG_PAD = 8;
+
     for (let itemIdx = 0; itemIdx < outfit.items.length; itemIdx++) {
       const item = outfit.items[itemIdx];
       const imgBuffer = imageBuffers[itemIdx];
-
       const tx = PAD + IMG_PAD + IMG_W + 10;
       const priceColX = PAD + IW - 82;
       const textW = priceColX - tx - 8;
+      const nameStr = truncate(item.name, Math.floor(textW / 6.2));
+      const whyStr  = truncate(item.why,  Math.floor(textW / 5.3));
 
-      // Approx max chars at each font size
-      const nameMaxChars = Math.floor(textW / 6.2);
-      const whyMaxChars  = Math.floor(textW / 5.3);
-      const nameStr = truncate(item.name, nameMaxChars);
-      const whyStr  = truncate(item.why,  whyMaxChars);
+      doc.rect(PAD, itemY, IW, CARD_H).fill(CARD);
+      doc.rect(PAD, itemY, IW, CARD_H).strokeColor(BORDER).lineWidth(0.5).stroke();
 
-      // Card background
-      doc.roundedRect(PAD, itemY, IW, CARD_H).fill(CARD);
-      doc.roundedRect(PAD, itemY, IW, CARD_H).strokeColor(CARD2).lineWidth(1).stroke();
-
-      // Image — vertically centred, clipped to rounded rect
       const imgY = itemY + (CARD_H - IMG_W) / 2;
       if (imgBuffer) {
         try {
@@ -720,14 +557,11 @@ async function buildPDF(content, quizData, products) {
           doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).clip();
           doc.image(imgBuffer, PAD + IMG_PAD, imgY, { width: IMG_W, height: IMG_W, cover: [IMG_W, IMG_W] });
           doc.restore();
-        } catch (e) {
-          doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).fill(CARD2);
-        }
+        } catch (e) { doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).fill(CARD2); }
       } else {
         doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).fill(CARD2);
       }
 
-      // Resolve product URL — from Claude response or fallback to products data
       let productUrl = item.url || null;
       if (!productUrl) {
         for (const catItems of Object.values(products)) {
@@ -736,21 +570,16 @@ async function buildPDF(content, quizData, products) {
         }
       }
 
-      // Category label
       doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold')
          .text(item.category.toUpperCase(), tx, itemY + 10, { width: textW, lineBreak: false, characterSpacing: 1.5 });
 
-      // Item name — single line, hard truncated, linked if URL available
-      // Linked names render in green to signal clickability
       const nameColor = productUrl ? GREEN : WHITE;
       doc.fontSize(10).fillColor(nameColor).font('Helvetica-Bold')
          .text(nameStr, tx, itemY + 22, { width: textW, lineBreak: false, ...(productUrl ? { link: productUrl } : {}) });
 
-      // Why it works — single line, hard truncated
       doc.fontSize(8.5).fillColor(GREY).font('Helvetica')
          .text(whyStr, tx, itemY + 38, { width: textW, lineBreak: false });
 
-      // Price — right aligned, also linked
       if (productUrl) {
         doc.fontSize(16).fillColor(GREEN).font('Helvetica-Bold')
            .text(item.price, priceColX, itemY + 14, { width: 80, align: 'right', lineBreak: false, link: productUrl });
@@ -759,93 +588,66 @@ async function buildPDF(content, quizData, products) {
            .text(item.price, priceColX, itemY + 14, { width: 80, align: 'right', lineBreak: false });
       }
 
-      // Brand — right aligned
       doc.fontSize(8).fillColor(GREY).font('Helvetica')
          .text(item.brand, priceColX, itemY + 37, { width: 80, align: 'right', lineBreak: false });
 
       itemY += CARD_H + 6;
     }
 
-    // Styling tip — dynamic height, positioned just below last item
     doc.fontSize(9.5).font('Helvetica-Oblique');
     const tipTextH = doc.heightOfString(outfit.stylingTip, { width: IW - 28, lineGap: 2 });
     const tipCardH = tipTextH + 30;
     const tipYRaw = itemY + 10;
-    const tipYMax = PH - 30 - 14 - tipCardH;
+    const tipYMax = PH - 28 - 14 - tipCardH;
     const tipY = Math.min(tipYRaw, tipYMax);
     lcard(PAD, tipY, IW, tipCardH, PURPLE);
-    doc.fontSize(7).fillColor(PURPLE).font('Helvetica-Bold')
-       .text('STYLING TIP', PAD + 14, tipY + 10, { characterSpacing: 2 });
-    doc.fontSize(9.5).fillColor(MUTED).font('Helvetica-Oblique')
-       .text(outfit.stylingTip, PAD + 14, tipY + 24, { width: IW - 28, lineGap: 2 });
+    doc.fontSize(7).fillColor(PURPLE).font('Helvetica-Bold').text('STYLING TIP', PAD + 14, tipY + 10, { characterSpacing: 2 });
+    doc.fontSize(9.5).fillColor(MUTED).font('Helvetica-Oblique').text(outfit.stylingTip, PAD + 14, tipY + 24, { width: IW - 28, lineGap: 2 });
 
     footer();
   }
 
   // ════════════════════════════════════════
-  // FINAL PAGE: STYLE GUIDE
+  // PAGE 5: STYLE GUIDE
   // ════════════════════════════════════════
   doc.addPage();
   bg();
   header('Your Personal Style Guide');
 
-  // Hero
   doc.rect(0, 40, PW, 80).fill('#0E0C0A');
   doc.moveTo(0, 120).lineTo(PW, 120).strokeColor(BORDER).lineWidth(0.5).stroke();
   doc.fontSize(26).fillColor(WHITE).font('Helvetica-Bold').text('YOUR STYLE GUIDE', PAD, 55);
   doc.fontSize(12).fillColor(GREEN).font('Helvetica-Oblique').text(content.styleType, PAD, 88);
 
-  // ── Style guide helpers ──
-  // Measure text height WITHOUT moving PDFKit's cursor (use absolute positioning always)
-  function textH(str, fontSize, fontName, width) {
-    doc.fontSize(fontSize).font(fontName || 'Helvetica');
-    return doc.heightOfString(str, { width, lineGap: 2 });
-  }
-
   const colW = (IW - 10) / 2;
   const innerW = colW - 26;
   const VPAD = 8;
-  // Use smaller font sizes throughout to ensure everything fits on one page
-  const BODY_FS  = 8;   // do/don't text
-  const ESS_FS   = 9;   // essentials text
-  const SEAS_FS  = 8;   // seasonal tips text
+  const BODY_FS = 8, ESS_FS = 9, SEAS_FS = 8;
 
-  // Pre-calculate row heights for do/don't
-  const doHeights   = content.styleGuide.doList.map(t =>
-    textH(`✓  ${t}`, BODY_FS, 'Helvetica', innerW) + VPAD * 2);
-  const dontHeights = content.styleGuide.dontList.map(t =>
-    textH(`✗  ${t}`, BODY_FS, 'Helvetica', innerW) + VPAD * 2);
+  const doHeights   = content.styleGuide.doList.map(t => textH(`✓  ${t}`, BODY_FS, 'Helvetica', innerW) + VPAD * 2);
+  const dontHeights = content.styleGuide.dontList.map(t => textH(`✗  ${t}`, BODY_FS, 'Helvetica', innerW) + VPAD * 2);
   const rowHeights  = doHeights.map((h, i) => Math.max(h, dontHeights[i] || 0, 28));
 
-  // Do's and Don'ts
   sectionLabel("DO'S & DON'TS", 132);
   const col2X = PAD + colW + 10;
 
-  // Column headers
   doc.rect(PAD,    154, colW, 22).fill('#181410');
   doc.fontSize(8.5).fillColor(GREEN).font('Helvetica-Bold').text('✓  DO',    PAD    + 12, 161, { lineBreak: false });
   doc.rect(col2X, 154, colW, 22).fill('#181410');
   doc.fontSize(8.5).fillColor(RED).font('Helvetica-Bold').text("✗  DON'T",  col2X  + 12, 161, { lineBreak: false });
 
-  // Rows — always use absolute Y so columns don't interfere with each other
   let doY = 182;
   rowHeights.forEach((rowH, i) => {
     const doText   = content.styleGuide.doList[i]   || '';
     const dontText = content.styleGuide.dontList[i] || '';
     const rowY = doY;
-
     doc.rect(PAD,    rowY, colW, rowH).fill(CARD2);
-    doc.fontSize(BODY_FS).fillColor(MUTED).font('Helvetica')
-       .text(`✓  ${doText}`, PAD + 12, rowY + VPAD, { width: innerW, lineGap: 2 });
-
+    doc.fontSize(BODY_FS).fillColor(MUTED).font('Helvetica').text(`✓  ${doText}`,   PAD    + 12, rowY + VPAD, { width: innerW, lineGap: 2 });
     doc.rect(col2X, rowY, colW, rowH).fill(CARD2);
-    doc.fontSize(BODY_FS).fillColor(MUTED).font('Helvetica')
-       .text(`✗  ${dontText}`, col2X + 12, rowY + VPAD, { width: innerW, lineGap: 2 });
-
+    doc.fontSize(BODY_FS).fillColor(MUTED).font('Helvetica').text(`✗  ${dontText}`, col2X + 12, rowY + VPAD, { width: innerW, lineGap: 2 });
     doY = rowY + rowH + 5;
   });
 
-  // Essentials
   const essY = doY + 12;
   sectionLabel('3 ESSENTIALS EVERY MAN IN YOUR STYLE NEEDS', essY);
   let essItemY = essY + 18;
@@ -853,14 +655,11 @@ async function buildPDF(content, quizData, products) {
     const essTextW = IW - 52;
     const h = Math.max(textH(item, ESS_FS, 'Helvetica-Bold', essTextW) + VPAD * 2, 32);
     doc.rect(PAD, essItemY, IW, h).fill(CARD2);
-    doc.fontSize(16).fillColor(GREEN).font('Helvetica-Bold')
-       .text(`0${i + 1}`, PAD + 10, essItemY + (h - 18) / 2, { lineBreak: false });
-    doc.fontSize(ESS_FS).fillColor(WHITE).font('Helvetica-Bold')
-       .text(item, PAD + 44, essItemY + VPAD, { width: essTextW, lineGap: 2 });
+    doc.fontSize(16).fillColor(GREEN).font('Helvetica-Bold').text(`0${i + 1}`, PAD + 10, essItemY + (h - 18) / 2, { lineBreak: false });
+    doc.fontSize(ESS_FS).fillColor(WHITE).font('Helvetica-Bold').text(item, PAD + 44, essItemY + VPAD, { width: essTextW, lineGap: 2 });
     essItemY += h + 5;
   });
 
-  // Seasonal tips
   const seasY = essItemY + 12;
   sectionLabel('SEASONAL TIPS', seasY);
   const seasons = [
@@ -869,7 +668,7 @@ async function buildPDF(content, quizData, products) {
     ['Autumn', '#D97706',  content.styleGuide.seasonalTips.autumn],
     ['Winter', PURPLE,     content.styleGuide.seasonalTips.winter],
   ];
-  const seasH   = seasons.map(([,, tip]) => textH(tip, SEAS_FS, 'Helvetica', colW - 22) + 34);
+  const seasH    = seasons.map(([,, tip]) => textH(tip, SEAS_FS, 'Helvetica', colW - 22) + 34);
   const seasRow0 = Math.max(seasH[0], seasH[1]);
   const seasRow1 = Math.max(seasH[2], seasH[3]);
 
@@ -880,46 +679,61 @@ async function buildPDF(content, quizData, products) {
     const y = seasY + 18 + (row === 0 ? 0 : seasRow0 + 6);
     doc.rect(x, y, colW, rowH).fill(CARD2);
     doc.fontSize(9).fillColor(color).font('Helvetica-Bold').text(name, x + 10, y + 9, { lineBreak: false });
-    doc.fontSize(SEAS_FS).fillColor(GREY).font('Helvetica')
-       .text(tip, x + 10, y + 24, { width: colW - 22, lineGap: 2 });
+    doc.fontSize(SEAS_FS).fillColor(GREY).font('Helvetica').text(tip, x + 10, y + 24, { width: colW - 22, lineGap: 2 });
   });
 
-  // Where to shop — fixed height cards, guaranteed to fit
-  const shopY = seasY + 18 + seasRow0 + 6 + seasRow1 + 14;
-  sectionLabel('WHERE TO SHOP', shopY);
+  // CTA — pinned to bottom of page, always safe regardless of content above
+  const ctaY = PH - 28 - 12 - 44;
+  doc.rect(PAD, ctaY, IW, 44).fill(CARD2);
+  doc.rect(PAD, ctaY, IW, 44).strokeColor(GREEN).lineWidth(0.5).stroke();
+  doc.fontSize(11).fillColor(WHITE).font('Helvetica-Bold')
+     .text('Want new outfits as your style evolves?', PAD, ctaY + 10, { width: IW, align: 'center' });
+  doc.fontSize(9).fillColor(GREEN).font('Helvetica')
+     .text('Retake the quiz anytime at outfitify.co.uk', PAD, ctaY + 26, { width: IW, align: 'center' });
+
+  footer();
+
+  // ════════════════════════════════════════
+  // PAGE 6: WHERE TO SHOP — dedicated page
+  // ════════════════════════════════════════
+  doc.addPage();
+  bg();
+  header('Where To Shop');
+
+  doc.rect(0, 40, PW, 80).fill('#0E0C0A');
+  doc.moveTo(0, 120).lineTo(PW, 120).strokeColor(BORDER).lineWidth(0.5).stroke();
+  doc.fontSize(26).fillColor(WHITE).font('Helvetica-Bold').text('WHERE TO SHOP', PAD, 55);
+  doc.fontSize(12).fillColor(GREEN).font('Helvetica-Oblique')
+     .text('Brands that suit your style and budget', PAD, 88);
 
   const shopItems = (content.styleGuide.whereToShop || []).slice(0, 4);
-  const shopColW = (IW - 8) / 2;
-  const SHOP_H = 38; // fixed card height — why text is max 12 words so always fits
-  const SHOP_GAP = 5;
+  const shopColW = (IW - 12) / 2;
 
   shopItems.forEach((shop, i) => {
     const col = i % 2;
     const row = Math.floor(i / 2);
-    const sx = PAD + col * (shopColW + 8);
-    const cardY = shopY + 18 + row * (SHOP_H + SHOP_GAP);
-    // Hard truncate brand why to ~60 chars to guarantee single line fit
-    const whyText = (shop.why || '').length > 65 ? (shop.why || '').slice(0, 62) + '…' : (shop.why || '');
-    doc.rect(sx, cardY, shopColW, SHOP_H).fill(CARD);
-    doc.rect(sx, cardY, 2, SHOP_H).fill(GREEN);
-    doc.fontSize(8).fillColor(WHITE).font('Helvetica-Bold')
-       .text(shop.brand, sx + 10, cardY + 7, { width: shopColW - 20, lineBreak: false });
-    doc.fontSize(7.5).fillColor(GREY).font('Helvetica')
-       .text(whyText, sx + 10, cardY + 20, { width: shopColW - 20, lineBreak: false });
+    const sx = PAD + col * (shopColW + 12);
+    const cardY = 138 + row * 120;
+
+    doc.rect(sx, cardY, shopColW, 108).fill(CARD);
+    doc.rect(sx, cardY, 2, 108).fill(GREEN);
+
+    doc.fontSize(36).fillColor(GREEN).font('Helvetica-Bold')
+       .text(`0${i + 1}`, sx + 14, cardY + 12, { lineBreak: false });
+
+    doc.fontSize(14).fillColor(WHITE).font('Helvetica-Bold')
+       .text(shop.brand, sx + 14, cardY + 56, { width: shopColW - 28, lineBreak: false });
+
+    const whyText = (shop.why || '').length > 160 ? (shop.why || '').slice(0, 157) + '…' : (shop.why || '');
+    doc.fontSize(9).fillColor(GREY).font('Helvetica')
+       .text(whyText, sx + 14, cardY + 76, { width: shopColW - 28, lineGap: 2 });
   });
 
-  const shopTotalH = Math.ceil(shopItems.length / 2) * (SHOP_H + SHOP_GAP);
-
-  // CTA
-  const ctaY = shopY + 18 + shopTotalH + 10;
-  doc.rect(PAD, ctaY, IW, 52).fill(CARD2);
-  doc.rect(PAD, ctaY, IW, 52).strokeColor(GREEN).lineWidth(0.5).stroke();
-  doc.fontSize(12).fillColor(WHITE).font('Helvetica-Bold')
-     .text('Want new outfits as your style evolves?', PAD, ctaY + 12, { width: IW, align: 'center' });
-  doc.fontSize(10).fillColor(GREEN).font('Helvetica')
-     .text('Retake the quiz anytime at outfitify.co.uk', PAD, ctaY + 30, { width: IW, align: 'center' });
+  doc.fontSize(9).fillColor(GREY).font('Helvetica-Oblique')
+     .text('All brands ship to the UK. Prices vary by season — check sale sections for budget-friendly options.', PAD, 390, { width: IW, align: 'center' });
 
   footer();
+
   doc.end();
 
   return new Promise((resolve, reject) => {
@@ -929,22 +743,19 @@ async function buildPDF(content, quizData, products) {
 }
 
 // ════════════════════════════════════════
-// Send backup email via ZeptoMail SMTP
+// Send backup email
 // ════════════════════════════════════════
 async function sendBackupEmail(toEmail, downloadUrl, styleType) {
   const transporter = nodemailer.createTransport({
     host: 'smtp.zeptomail.eu',
     port: 587,
-    auth: {
-      user: process.env.ZEPTO_SMTP_USER,
-      pass: process.env.ZEPTO_SMTP_PASS,
-    }
+    auth: { user: process.env.ZEPTO_SMTP_USER, pass: process.env.ZEPTO_SMTP_PASS }
   });
 
   await transporter.sendMail({
     from: '"Outfitify" <outfitify@outfitify.co.uk>',
     to: toEmail,
-    subject: `Your ${styleType} Style Report is Ready 🔥`,
+    subject: `Your ${styleType} Style Report is Ready`,
     html: `
       <div style="background:#0A0A0A;padding:0;font-family:Arial,sans-serif;max-width:600px;margin:0 auto;border:1px solid #2A2520">
         <div style="background:#111111;padding:28px 40px;border-bottom:1px solid #2A2520;text-align:center">
@@ -954,7 +765,7 @@ async function sendBackupEmail(toEmail, downloadUrl, styleType) {
         <div style="padding:44px 40px">
           <h2 style="color:#F2EDE6;font-size:26px;font-weight:300;margin:0 0 12px;line-height:1.2">Your report is ready.</h2>
           <p style="color:#7A6E66;font-size:14px;line-height:1.7;margin:0 0 32px">
-            Your personalised <span style="color:#C8BFB5">${styleType}</span> style report has been generated — 3 complete outfits, your colour palette, and a personal style guide built around you.
+            Your personalised <span style="color:#C8BFB5">${styleType}</span> style report has been generated — 3 complete outfits, your colour palette, a personal style guide and where to shop, all built around you.
           </p>
           <a href="${downloadUrl}" style="display:block;background:#F2EDE6;color:#0A0A0A;text-align:center;padding:16px;font-size:11px;font-weight:600;letter-spacing:3px;text-decoration:none;margin:0 0 32px;text-transform:uppercase">
             DOWNLOAD MY STYLE REPORT →
@@ -971,8 +782,5 @@ async function sendBackupEmail(toEmail, downloadUrl, styleType) {
   });
 }
 
-// ════════════════════════════════════════
-// Start server
-// ════════════════════════════════════════
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Outfitify backend running on port ${PORT}`));
