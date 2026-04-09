@@ -460,7 +460,7 @@ Rules:
 - Do's and Don'ts must teach the customer something real about how this style works — proportions, fit, layering, colour theory, fabric choices
 - Seasonal tips must be specific to this customer's style, not generic seasonal advice
 - Make the intro feel like it was written for this exact person based on their struggles and preferences
-- whereToShop must contain exactly 4 brands suited to their style type and budget — real UK-accessible brands only (e.g. ASOS, Zara, H&M, Uniqlo, & Other Stories, COS, Pull&Bear, Bershka, Urban Outfitters, ARKET, Reiss, River Island, Next, Topman, Weekday, Carhartt WIP, Stone Island, Nike, Adidas, New Balance etc). Each brand must have a specific one-line reason tailored to their style and budget — not just "great quality"
+- whereToShop must contain exactly 4 brands suited to their style type and budget — real UK-accessible brands only (e.g. ASOS, Zara, H&M, Uniqlo, COS, Pull&Bear, Bershka, Urban Outfitters, ARKET, Reiss, River Island, Next, Topman, Weekday, Carhartt WIP, Stone Island, Nike, Adidas, New Balance etc). Each why must be a MAXIMUM of 12 words — short and punchy, not a full sentence
 - JSON only, no markdown, no preamble`;
 
   const message = await anthropic.messages.create({
@@ -884,40 +884,34 @@ async function buildPDF(content, quizData, products) {
        .text(tip, x + 10, y + 24, { width: colW - 22, lineGap: 2 });
   });
 
-  // Where to shop — pre-calculate all row heights so nothing overflows
+  // Where to shop — fixed height cards, guaranteed to fit
   const shopY = seasY + 18 + seasRow0 + 6 + seasRow1 + 14;
   sectionLabel('WHERE TO SHOP', shopY);
 
-  const shopItems = (content.styleGuide.whereToShop || []).slice(0, 4); // max 4 to guarantee fit
+  const shopItems = (content.styleGuide.whereToShop || []).slice(0, 4);
   const shopColW = (IW - 8) / 2;
+  const SHOP_H = 38; // fixed card height — why text is max 12 words so always fits
+  const SHOP_GAP = 5;
 
-  // Pre-calculate heights per pair of cards
-  const shopRowHeights = [];
-  for (let i = 0; i < shopItems.length; i += 2) {
-    const hL = Math.max(textH(shopItems[i]?.why || '', 7.5, 'Helvetica', shopColW - 24) + 26, 40);
-    const hR = shopItems[i+1] ? Math.max(textH(shopItems[i+1].why || '', 7.5, 'Helvetica', shopColW - 24) + 26, 40) : 0;
-    shopRowHeights.push(Math.max(hL, hR));
-  }
-
-  let shopRowY = shopY + 18;
   shopItems.forEach((shop, i) => {
     const col = i % 2;
     const row = Math.floor(i / 2);
-    const rowH = shopRowHeights[row];
     const sx = PAD + col * (shopColW + 8);
-    const cardY = shopRowY + shopRowHeights.slice(0, row).reduce((a, b) => a + b + 6, 0);
-    doc.rect(sx, cardY, shopColW, rowH).fill(CARD);
-    doc.rect(sx, cardY, 2, rowH).fill(GREEN);
+    const cardY = shopY + 18 + row * (SHOP_H + SHOP_GAP);
+    // Hard truncate brand why to ~60 chars to guarantee single line fit
+    const whyText = (shop.why || '').length > 65 ? (shop.why || '').slice(0, 62) + '…' : (shop.why || '');
+    doc.rect(sx, cardY, shopColW, SHOP_H).fill(CARD);
+    doc.rect(sx, cardY, 2, SHOP_H).fill(GREEN);
     doc.fontSize(8).fillColor(WHITE).font('Helvetica-Bold')
-       .text(shop.brand, sx + 10, cardY + 8, { width: shopColW - 20, lineBreak: false });
+       .text(shop.brand, sx + 10, cardY + 7, { width: shopColW - 20, lineBreak: false });
     doc.fontSize(7.5).fillColor(GREY).font('Helvetica')
-       .text(shop.why, sx + 10, cardY + 20, { width: shopColW - 20, lineGap: 1.5 });
+       .text(whyText, sx + 10, cardY + 20, { width: shopColW - 20, lineBreak: false });
   });
 
-  const shopTotalH = shopRowHeights.reduce((a, b) => a + b + 6, 0);
+  const shopTotalH = Math.ceil(shopItems.length / 2) * (SHOP_H + SHOP_GAP);
 
   // CTA
-  const ctaY = shopRowY + shopTotalH + 14;
+  const ctaY = shopY + 18 + shopTotalH + 10;
   doc.rect(PAD, ctaY, IW, 52).fill(CARD2);
   doc.rect(PAD, ctaY, IW, 52).strokeColor(GREEN).lineWidth(0.5).stroke();
   doc.fontSize(12).fillColor(WHITE).font('Helvetica-Bold')
