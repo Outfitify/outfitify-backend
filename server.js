@@ -709,28 +709,39 @@ async function buildPDF(content, quizData, products) {
   const shopItems = (content.styleGuide.whereToShop || []).slice(0, 4);
   const shopColW = (IW - 12) / 2;
 
+  // Pre-calculate card heights so text always fits
+  const shopTextW = shopColW - 28;
+  const shopCardHeights = shopItems.map(shop => {
+    const whyH = textH(shop.why || '', 9, 'Helvetica', shopTextW);
+    return 14 + 42 + 6 + 16 + 8 + whyH + 14; // top + number + gap + brand + gap + why + bottom
+  });
+  // Pair rows — each row takes the taller of the two cards
+  const shopRow0H = Math.max(shopCardHeights[0] || 0, shopCardHeights[1] || 0);
+  const shopRow1H = Math.max(shopCardHeights[2] || 0, shopCardHeights[3] || 0);
+
   shopItems.forEach((shop, i) => {
     const col = i % 2;
     const row = Math.floor(i / 2);
     const sx = PAD + col * (shopColW + 12);
-    const cardY = 138 + row * 120;
+    const rowH = row === 0 ? shopRow0H : shopRow1H;
+    const cardY = 138 + (row === 0 ? 0 : shopRow0H + 12);
 
-    doc.rect(sx, cardY, shopColW, 108).fill(CARD);
-    doc.rect(sx, cardY, 2, 108).fill(GREEN);
+    doc.rect(sx, cardY, shopColW, rowH).fill(CARD);
+    doc.rect(sx, cardY, 2, rowH).fill(GREEN);
 
-    doc.fontSize(36).fillColor(GREEN).font('Helvetica-Bold')
-       .text(`0${i + 1}`, sx + 14, cardY + 12, { lineBreak: false });
+    doc.fontSize(32).fillColor(GREEN).font('Helvetica-Bold')
+       .text(`0${i + 1}`, sx + 14, cardY + 14, { lineBreak: false });
 
-    doc.fontSize(14).fillColor(WHITE).font('Helvetica-Bold')
-       .text(shop.brand, sx + 14, cardY + 56, { width: shopColW - 28, lineBreak: false });
+    doc.fontSize(13).fillColor(WHITE).font('Helvetica-Bold')
+       .text(shop.brand, sx + 14, cardY + 54, { width: shopColW - 28, lineBreak: false });
 
-    const whyText = (shop.why || '').length > 160 ? (shop.why || '').slice(0, 157) + '…' : (shop.why || '');
     doc.fontSize(9).fillColor(GREY).font('Helvetica')
-       .text(whyText, sx + 14, cardY + 76, { width: shopColW - 28, lineGap: 2 });
+       .text(shop.why || '', sx + 14, cardY + 74, { width: shopColW - 28, lineGap: 2 });
   });
 
+  const shopNoteY = 138 + shopRow0H + 12 + shopRow1H + 20;
   doc.fontSize(9).fillColor(GREY).font('Helvetica-Oblique')
-     .text('All brands ship to the UK. Prices vary by season — check sale sections for budget-friendly options.', PAD, 390, { width: IW, align: 'center' });
+     .text('All brands ship to the UK. Prices vary by season — check sale sections for budget-friendly options.', PAD, shopNoteY, { width: IW, align: 'center' });
 
   footer();
 
