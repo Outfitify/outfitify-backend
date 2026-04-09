@@ -757,17 +757,12 @@ async function buildPDF(content, quizData, products) {
 // Send backup email
 // ════════════════════════════════════════
 async function sendBackupEmail(toEmail, downloadUrl, styleType) {
-  const transporter = nodemailer.createTransport({
-    host: 'smtp.zeptomail.eu',
-    port: 587,
-    auth: { user: process.env.ZEPTO_SMTP_USER, pass: process.env.ZEPTO_SMTP_PASS }
-  });
-
-  await transporter.sendMail({
-    from: '"Outfitify" <outfitify@outfitify.co.uk>',
-    to: toEmail,
+  // Use ZeptoMail HTTP API (not SMTP) — matches account configuration
+  const emailBody = {
+    from: { address: 'outfitify@outfitify.co.uk', name: 'Outfitify' },
+    to: [{ email_address: { address: toEmail } }],
     subject: `Your ${styleType} Style Report is Ready`,
-    html: `
+    htmlbody: `
       <div style="background:#0A0A0A;padding:0;font-family:Arial,sans-serif;max-width:600px;margin:0 auto;border:1px solid #2A2520">
         <div style="background:#111111;padding:28px 40px;border-bottom:1px solid #2A2520;text-align:center">
           <p style="color:#7A6E66;font-size:10px;letter-spacing:4px;margin:0 0 4px">YOUR PERSONALISED STYLE REPORT</p>
@@ -790,7 +785,17 @@ async function sendBackupEmail(toEmail, downloadUrl, styleType) {
         </div>
       </div>
     `
+  };
+
+  const response = await axios.post('https://api.zeptomail.eu/v1.1/email', emailBody, {
+    headers: {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+      'Authorization': process.env.ZEPTO_SMTP_PASS, // the Zoho-enczapikey token
+    }
   });
+
+  console.log('Email sent:', response.data);
 }
 
 const PORT = process.env.PORT || 3000;
