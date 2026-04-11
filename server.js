@@ -352,24 +352,16 @@ Generate a style report with exactly this JSON structure (JSON only, no markdown
     "neverBuyAgain": "2-3 specific things they should stop buying immediately and exactly why — tied to their struggles and goal",
     "costPerWear": "One specific insight about how to think about spending for their exact budget level"
   },
-  "outfits": [
+  "recommendedPieces": [
     {
-      "name": "Outfit name",
-      "occasion": "Specific occasion drawn from their lifestyle",
-      "items": [
-        {
-          "category": "Top/Bottoms/Shoes/Layer",
-          "name": "exact product name from the list above",
-          "brand": "brand name",
-          "price": "£XX",
-          "url": "exact product url from the list above",
-          "why": "One sentence — why this specific item works for their goal. Reference fit, fabric or a specific detail. Never generic praise."
-        }
-      ],
-      "howToWear": "Specific styling instruction for this exact outfit — reference the actual items by name or category",
-      "whyItWorks": "Why this outfit directly serves their goal and lifestyle — tied to their specific answers"
+      "category": "Top/Bottoms/Shoes/Hoodie/Jacket",
+      "name": "exact product name from the list above",
+      "brand": "brand name",
+      "price": "£XX",
+      "url": "exact product url from the list above",
+      "why": "One sentence — why this specific piece works for their style DNA, goal and lifestyle. Reference the specific fit, fabric or detail that makes it right for them. Never generic praise."
     }
-  ],
+  ]
   "whereToInvest": [
     {
       "brand": "Brand name",
@@ -381,9 +373,10 @@ Generate a style report with exactly this JSON structure (JSON only, no markdown
 
 Rules:
 - wardrobeBlueprint.priorities must contain exactly 5 items in priority order
-- outfits must contain exactly 3 outfits, each with 3-4 items from the products above
+- recommendedPieces must contain exactly 9 pieces selected from the products above — 3 tops, 2 bottoms, 2 shoes, 2 layers/jackets. Choose pieces that align with their style DNA and goal. They do not need to form complete outfits — they should be the 9 best individual pieces for this customer
 - whereToInvest must contain exactly 4 brands — real UK-accessible brands only
-- Include the exact product URL for each outfit item from the list above
+- Include the exact product URL for each recommended piece from the list above
+- Keep language simple and direct — write for someone who knows nothing about fashion
 - Every field must be specific to this customer — if it could apply to any man, rewrite it
 - JSON only, no markdown, no preamble`;
 
@@ -406,157 +399,179 @@ Rules:
 }
 
 // ════════════════════════════════════════
-// Build PDF — placeholder version for testing
-// Renders the Claude output as readable text so
-// we can verify content quality before full rebuild
+// Build PDF — 6 page clean version
 // ════════════════════════════════════════
 async function buildPDF(content, quizData, products) {
   const pdfPath = path.join(os.tmpdir(), `outfitify-${Date.now()}.pdf`);
-  const doc = new PDFDocument({ size: 'A4', margin: 50, autoFirstPage: true });
+  const doc = new PDFDocument({ size: 'A4', margin: 0, autoFirstPage: true });
   const stream = fs.createWriteStream(pdfPath);
   doc.pipe(stream);
 
+  // ── Design tokens ──
   const BG     = '#0A0A0A';
+  const HEADER = '#111111';
+  const BORDER = '#2A2520';
   const GREEN  = '#B8A898';
+  const PURPLE = '#8C7B6B';
   const WHITE  = '#F2EDE6';
   const GREY   = '#7A6E66';
   const MUTED  = '#C8BFB5';
   const CARD   = '#141210';
   const CARD2  = '#1C1916';
-  const BORDER = '#2A2520';
+  const RED    = '#C4886A';
+
   const PW = 595, PH = 842, PAD = 50, IW = 495;
 
   function bg() { doc.rect(0, 0, PW, PH).fill(BG); }
-  function header(sub) {
-    doc.rect(0, 0, PW, 36).fill('#111111');
+
+  function pageHeader(sub) {
+    doc.rect(0, 0, PW, 36).fill(HEADER);
     doc.rect(0, 35, PW, 1).fill(BORDER);
     doc.fontSize(8).fillColor(WHITE).font('Helvetica-Bold')
        .text('OUTFITIFY', 0, 11, { width: PW, align: 'center', characterSpacing: 6 });
     if (sub) doc.fontSize(6.5).fillColor(GREY).font('Helvetica')
        .text(sub.toUpperCase(), 0, 22, { width: PW, align: 'center', characterSpacing: 2 });
   }
+
   function footer() {
-    doc.rect(0, PH - 28, PW, 28).fill('#111111');
+    doc.rect(0, PH - 28, PW, 28).fill(HEADER);
     doc.rect(0, PH - 28, PW, 1).fill(BORDER);
     doc.fontSize(7).fillColor(GREY).font('Helvetica')
        .text('OUTFITIFY.CO.UK  ·  MAKING STYLE EFFORTLESS', 0, PH - 15, { width: PW, align: 'center', characterSpacing: 1 });
   }
-  function sectionTitle(text, y) {
-    doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold')
+
+  function sectionLabel(text, y) {
+    doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold')
        .text(text, PAD, y, { characterSpacing: 3 });
     doc.moveTo(PAD, y + 12).lineTo(PAD + IW, y + 12).strokeColor(BORDER).lineWidth(0.5).stroke();
   }
+
   function lcard(x, y, w, h, accent) {
     doc.rect(x, y, w, h).fill(CARD);
     doc.rect(x, y, 2, h).fill(accent || GREEN);
   }
 
-  // ── PAGE 1: COVER ──
+  function textH(str, fontSize, fontName, width) {
+    doc.fontSize(fontSize).font(fontName || 'Helvetica');
+    return doc.heightOfString(str || '', { width, lineGap: 2 });
+  }
+
+  function heroBlock(line1, line2, sub) {
+    doc.rect(0, 40, PW, 90).fill('#0E0C0A');
+    doc.moveTo(0, 130).lineTo(PW, 130).strokeColor(BORDER).lineWidth(0.5).stroke();
+    doc.fontSize(24).fillColor(WHITE).font('Helvetica-Bold').text(line1, PAD, 52);
+    doc.fontSize(24).fillColor(GREEN).font('Helvetica-Bold').text(line2, PAD, 80);
+    if (sub) doc.fontSize(10).fillColor(GREY).font('Helvetica-Oblique').text(sub, PAD, 118, { width: IW });
+  }
+
+  // ════════════════════════════════════════
+  // PAGE 1: COVER
+  // ════════════════════════════════════════
   bg();
-  header();
   doc.rect(0, 40, PW, 180).fill('#0E0C0A');
   doc.moveTo(0, 220).lineTo(PW, 220).strokeColor(BORDER).lineWidth(0.5).stroke();
+  pageHeader();
 
-  // Style identity
-  const nameParts = (content.styleIdentity.name || '').split(' ');
-  doc.fontSize(54).fillColor(WHITE).font('Helvetica-Bold')
-     .text((nameParts[0] || '').toUpperCase(), PAD, 58);
-  doc.fontSize(54).fillColor(GREEN).font('Helvetica-Bold')
-     .text((nameParts.slice(1).join(' ') || '').toUpperCase(), PAD, 112);
+  // Style identity name — split into two lines
+  const nameParts = (content.styleIdentity?.name || 'YOUR STYLE').split(' ');
+  const nameL1 = nameParts[0] || '';
+  const nameL2 = nameParts.slice(1).join(' ') || '';
+  doc.fontSize(52).fillColor(WHITE).font('Helvetica-Bold').text(nameL1.toUpperCase(), PAD, 58);
+  doc.fontSize(52).fillColor(GREEN).font('Helvetica-Bold').text(nameL2.toUpperCase(), PAD, 112);
   doc.fontSize(10).fillColor(GREY).font('Helvetica-Oblique')
-     .text(content.styleIdentity.tagline || '', PAD, 178, { width: IW });
+     .text(content.styleIdentity?.tagline || '', PAD, 178, { width: IW });
 
   // Intro card
-  lcard(PAD, 232, IW, 80, GREEN);
+  lcard(PAD, 232, IW, 82, GREEN);
   doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold')
      .text('ABOUT YOUR REPORT', PAD + 14, 242, { characterSpacing: 2 });
   doc.fontSize(10).fillColor(MUTED).font('Helvetica')
-     .text(content.styleIdentity.intro || '', PAD + 14, 256, { width: IW - 28, lineGap: 3 });
+     .text(content.styleIdentity?.intro || '', PAD + 14, 258, { width: IW - 28, lineGap: 3 });
 
   // Colour palette
-  sectionTitle('YOUR COLOUR PALETTE', 328);
+  sectionLabel('YOUR COLOUR PALETTE', 330);
   const sw = 56, swGap = 11;
-  (content.colourPalette.colours || []).forEach((hex, i) => {
+  (content.colourPalette?.colours || []).forEach((hex, i) => {
     const x = PAD + i * (sw + swGap);
-    doc.rect(x, 350, sw, sw).fill(hex);
+    doc.rect(x, 352, sw, sw).fill(hex);
     doc.fontSize(7.5).fillColor(GREY).font('Helvetica')
-       .text((content.colourPalette.labels || [])[i] || '', x, 413, { width: sw, align: 'center' });
+       .text((content.colourPalette?.labels || [])[i] || '', x, 414, { width: sw, align: 'center' });
   });
   doc.fontSize(9.5).fillColor(MUTED).font('Helvetica')
-     .text(content.colourPalette.rationale || '', PAD, 432, { width: IW, lineGap: 3 });
+     .text(content.colourPalette?.rationale || '', PAD, 432, { width: IW, lineGap: 3 });
 
   // What's inside
-  sectionTitle("WHAT'S INSIDE", 474);
+  sectionLabel("WHAT'S INSIDE", 474);
   const insideItems = [
-    ['✓', 'Why You\'ve Been Getting It Wrong', 'Your personal style diagnosis'],
-    ['✓', 'Your Style DNA', 'Silhouette, fit language, fabrics & colour'],
-    ['✓', 'Your Wardrobe Blueprint', '5 priorities, what to buy first & why'],
-    ['✓', 'The Looks', '3 outfit examples built around your life'],
+    ['Why You\'ve Been Getting It Wrong', 'Your personal style diagnosis'],
+    ['Your Style DNA', 'Silhouette, fit, fabrics & colour'],
+    ['Your Wardrobe Blueprint', '5 priorities & what to buy first'],
+    ['9 Recommended Pieces', 'Hand-picked for your style & budget'],
   ];
-  insideItems.forEach(([icon, title, desc], i) => {
+  insideItems.forEach(([title, desc], i) => {
     const col = i % 2, row = Math.floor(i / 2);
     const cardW = (IW - 10) / 2;
-    const x = PAD + col * (cardW + 10), y = 496 + row * 58;
-    doc.rect(x, y, cardW, 50).fill(CARD2);
-    doc.fontSize(16).fillColor(GREEN).font('Helvetica-Bold').text(icon, x + 12, y + 16, { width: 20 });
-    doc.fontSize(9.5).fillColor(WHITE).font('Helvetica-Bold').text(title, x + 38, y + 10, { width: cardW - 48 });
-    doc.fontSize(8).fillColor(GREY).font('Helvetica').text(desc, x + 38, y + 26, { width: cardW - 48 });
+    const x = PAD + col * (cardW + 10), y = 496 + row * 56;
+    doc.rect(x, y, cardW, 48).fill(CARD2);
+    doc.rect(x, y, 2, 48).fill(GREEN);
+    doc.fontSize(9.5).fillColor(WHITE).font('Helvetica-Bold').text(title, x + 14, y + 8, { width: cardW - 24 });
+    doc.fontSize(8).fillColor(GREY).font('Helvetica').text(desc, x + 14, y + 26, { width: cardW - 24 });
   });
 
   footer();
 
-  // ── PAGE 2: WHY YOU'VE BEEN GETTING IT WRONG ──
+  // ════════════════════════════════════════
+  // PAGE 2: WHY YOU'VE BEEN GETTING IT WRONG
+  // ════════════════════════════════════════
   doc.addPage();
   bg();
-  header('Why You\'ve Been Getting It Wrong');
+  pageHeader("Why You've Been Getting It Wrong");
+  heroBlock("WHY YOU'VE BEEN", "GETTING IT WRONG");
 
-  doc.rect(0, 40, PW, 90).fill('#0E0C0A');
-  doc.moveTo(0, 130).lineTo(PW, 130).strokeColor(BORDER).lineWidth(0.5).stroke();
-  doc.fontSize(22).fillColor(WHITE).font('Helvetica-Bold')
-     .text('WHY YOU\'VE BEEN', PAD, 52);
-  doc.fontSize(22).fillColor(GREEN).font('Helvetica-Bold')
-     .text('GETTING IT WRONG', PAD, 78);
-
-  // Diagnosis headline
+  // Headline card
+  const diagHeadline = content.diagnosis?.headline || '';
   lcard(PAD, 144, IW, 52, GREEN);
-  doc.fontSize(14).fillColor(WHITE).font('Helvetica-Bold')
-     .text(content.diagnosis?.headline || '', PAD + 16, 158, { width: IW - 32, lineGap: 2 });
+  doc.fontSize(13).fillColor(WHITE).font('Helvetica-Bold')
+     .text(diagHeadline, PAD + 16, 158, { width: IW - 32, lineGap: 2 });
 
   // Body
-  doc.fontSize(10).fillColor(MUTED).font('Helvetica')
-     .text(content.diagnosis?.body || '', PAD, 212, { width: IW, lineGap: 4 });
+  const diagBody = content.diagnosis?.body || '';
+  const diagBodyH = textH(diagBody, 10.5, 'Helvetica', IW) + 8;
+  doc.fontSize(10.5).fillColor(MUTED).font('Helvetica')
+     .text(diagBody, PAD, 212, { width: IW, lineGap: 4 });
 
   // The Truth
-  const truthY = 212 + doc.heightOfString(content.diagnosis?.body || '', { width: IW, lineGap: 4 }) + 24;
+  const truthY = 220 + diagBodyH;
   doc.rect(PAD, truthY, IW, 1).fill(GREEN);
+  const theTruth = content.diagnosis?.theTruth || '';
   doc.fontSize(13).fillColor(GREEN).font('Helvetica-Bold')
-     .text(content.diagnosis?.theTruth || '', PAD, truthY + 16, { width: IW, lineGap: 3 });
+     .text(theTruth, PAD, truthY + 16, { width: IW, lineGap: 3 });
 
   footer();
 
-  // ── PAGE 3: YOUR STYLE DNA ──
+  // ════════════════════════════════════════
+  // PAGE 3: YOUR STYLE DNA
+  // ════════════════════════════════════════
   doc.addPage();
   bg();
-  header('Your Style DNA');
-
-  doc.rect(0, 40, PW, 90).fill('#0E0C0A');
-  doc.moveTo(0, 130).lineTo(PW, 130).strokeColor(BORDER).lineWidth(0.5).stroke();
-  doc.fontSize(22).fillColor(WHITE).font('Helvetica-Bold').text('YOUR', PAD, 52);
-  doc.fontSize(22).fillColor(GREEN).font('Helvetica-Bold').text('STYLE DNA', PAD, 78);
+  pageHeader('Your Style DNA');
+  heroBlock('YOUR', 'STYLE DNA');
 
   const dnaItems = [
-    ['SILHOUETTE', content.styleDNA?.silhouette || ''],
-    ['FIT LANGUAGE', content.styleDNA?.fitLanguage || ''],
-    ['FABRICS', content.styleDNA?.fabrics || ''],
-    ['COLOUR USAGE', content.styleDNA?.colourUsage || ''],
-    ['STOP WEARING', content.styleDNA?.avoid || ''],
+    ['SILHOUETTE', content.styleDNA?.silhouette || '', GREEN],
+    ['FIT LANGUAGE', content.styleDNA?.fitLanguage || '', GREEN],
+    ['FABRICS', content.styleDNA?.fabrics || '', GREEN],
+    ['COLOUR USAGE', content.styleDNA?.colourUsage || '', GREEN],
+    ['STOP WEARING', content.styleDNA?.avoid || '', RED],
   ];
 
   let dnaY = 144;
-  dnaItems.forEach(([label, text]) => {
-    const h = Math.max(doc.fontSize(9.5).heightOfString(text, { width: IW - 28, lineGap: 3 }) + 32, 52);
-    lcard(PAD, dnaY, IW, h, label === 'STOP WEARING' ? '#C4886A' : GREEN);
-    doc.fontSize(6.5).fillColor(label === 'STOP WEARING' ? '#C4886A' : GREEN).font('Helvetica-Bold')
+  dnaItems.forEach(([label, text, accent]) => {
+    const h = Math.max(textH(text, 9.5, 'Helvetica', IW - 28) + 32, 52);
+    // Stop if we're going to overflow
+    if (dnaY + h > PH - 40) return;
+    lcard(PAD, dnaY, IW, h, accent);
+    doc.fontSize(6.5).fillColor(accent).font('Helvetica-Bold')
        .text(label, PAD + 14, dnaY + 10, { characterSpacing: 2 });
     doc.fontSize(9.5).fillColor(MUTED).font('Helvetica')
        .text(text, PAD + 14, dnaY + 24, { width: IW - 28, lineGap: 3 });
@@ -565,213 +580,167 @@ async function buildPDF(content, quizData, products) {
 
   footer();
 
-  // ── PAGE 4: YOUR WARDROBE BLUEPRINT ──
+  // ════════════════════════════════════════
+  // PAGE 4: YOUR WARDROBE BLUEPRINT
+  // ════════════════════════════════════════
   doc.addPage();
   bg();
-  header('Your Wardrobe Blueprint');
-
-  doc.rect(0, 40, PW, 90).fill('#0E0C0A');
-  doc.moveTo(0, 130).lineTo(PW, 130).strokeColor(BORDER).lineWidth(0.5).stroke();
-  doc.fontSize(22).fillColor(WHITE).font('Helvetica-Bold').text('YOUR WARDROBE', PAD, 52);
-  doc.fontSize(22).fillColor(GREEN).font('Helvetica-Bold').text('BLUEPRINT', PAD, 78);
+  pageHeader('Your Wardrobe Blueprint');
+  heroBlock('YOUR WARDROBE', 'BLUEPRINT');
 
   // Strategy headline
   doc.fontSize(10).fillColor(GREY).font('Helvetica-Oblique')
      .text(content.wardrobeBlueprint?.headline || '', PAD, 144, { width: IW });
 
   // 5 priorities
-  let bpY = 170;
+  let bpY = 168;
   (content.wardrobeBlueprint?.priorities || []).forEach((p, i) => {
-    const textW = IW - 80;
-    const h = Math.max(
-      doc.fontSize(9).heightOfString(p.why || '', { width: textW, lineGap: 2 }) +
-      doc.fontSize(8).heightOfString(p.howToShop || '', { width: textW, lineGap: 2 }) + 38, 64
-    );
+    const textW = IW - 72;
+    const whyH = textH(p.why || '', 9, 'Helvetica', textW);
+    const shopH = textH(p.howToShop || '', 8, 'Helvetica-Oblique', textW);
+    const h = Math.max(whyH + shopH + 36, 60);
+    if (bpY + h > PH - 80) return; // skip if overflow
     doc.rect(PAD, bpY, IW, h).fill(CARD2);
     doc.rect(PAD, bpY, 2, h).fill(GREEN);
-
-    // Order number
-    doc.fontSize(28).fillColor(GREEN).font('Helvetica-Bold')
-       .text(`0${p.order}`, PAD + 10, bpY + (h - 28) / 2, { lineBreak: false });
-
-    // Item name
+    doc.fontSize(24).fillColor(GREEN).font('Helvetica-Bold')
+       .text(`0${p.order}`, PAD + 10, bpY + (h - 24) / 2, { lineBreak: false });
     doc.fontSize(10).fillColor(WHITE).font('Helvetica-Bold')
        .text(p.item || '', PAD + 52, bpY + 10, { width: textW, lineBreak: false });
-    // Why
     doc.fontSize(9).fillColor(MUTED).font('Helvetica')
        .text(p.why || '', PAD + 52, bpY + 26, { width: textW, lineGap: 2 });
-    // How to shop
-    const whyH = doc.fontSize(9).heightOfString(p.why || '', { width: textW, lineGap: 2 });
     doc.fontSize(8).fillColor(GREEN).font('Helvetica-Oblique')
        .text(p.howToShop || '', PAD + 52, bpY + 28 + whyH, { width: textW, lineGap: 2 });
-
-    bpY += h + 6;
+    bpY += h + 5;
   });
 
-  // Never buy again
-  const neverY = bpY + 10;
-  doc.rect(PAD, neverY, IW, 1).fill('#C4886A');
-  doc.fontSize(7).fillColor('#C4886A').font('Helvetica-Bold')
+  // Never buy again — pinned just above footer
+  const neverY = Math.min(bpY + 8, PH - 100);
+  doc.rect(PAD, neverY, IW, 1).fill(RED);
+  doc.fontSize(7).fillColor(RED).font('Helvetica-Bold')
      .text('NEVER BUY AGAIN', PAD, neverY + 10, { characterSpacing: 2 });
   doc.fontSize(9.5).fillColor(MUTED).font('Helvetica')
      .text(content.wardrobeBlueprint?.neverBuyAgain || '', PAD, neverY + 24, { width: IW, lineGap: 3 });
 
   footer();
 
-  // ── PAGES 5-7: THE LOOKS (3 outfits) ──
-  for (let i = 0; i < (content.outfits || []).length; i++) {
-    const outfit = content.outfits[i];
-    doc.addPage();
-    bg();
-    header(`The Looks — ${i + 1} of ${content.outfits.length}`);
-
-    // Hero
-    const nameText = (outfit.name || '').toUpperCase();
-    const prefixStr = `0${i + 1}  `;
-    let nameFontSize = 40;
-    for (const sz of [40, 34, 28, 22]) {
-      doc.fontSize(sz).font('Helvetica-Bold');
-      if (doc.widthOfString(prefixStr + nameText) <= IW) { nameFontSize = sz; break; }
-      nameFontSize = sz;
-    }
-    const nameLineH = nameFontSize * 1.2;
-    const heroH = 18 + nameLineH + 8 + 14 + 8 + 20 + 10;
-    const heroBottom = 40 + heroH;
-
-    doc.rect(0, 40, PW, heroH).fill('#0E0C0A');
-    doc.moveTo(0, heroBottom).lineTo(PW, heroBottom).strokeColor(BORDER).lineWidth(0.5).stroke();
-
-    doc.fontSize(nameFontSize).font('Helvetica-Bold');
-    doc.fillColor(GREEN).text(prefixStr, PAD, 40 + 18, { continued: true });
-    doc.fillColor(WHITE).text(nameText, { lineBreak: false });
-
-    doc.fontSize(10).fillColor(GREY).font('Helvetica-Oblique')
-       .text(outfit.occasion || '', PAD, 40 + 18 + nameLineH + 8, { width: IW, lineBreak: false });
-
-    // Why it works
-    const whyCardTop = heroBottom + 12;
-    doc.fontSize(9.5).font('Helvetica');
-    const whyH = doc.heightOfString(outfit.whyItWorks || '', { width: IW - 28, lineGap: 3 }) + 28;
-    lcard(PAD, whyCardTop, IW, whyH, GREEN);
-    doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold')
-       .text('WHY THIS WORKS FOR YOU', PAD + 14, whyCardTop + 10, { characterSpacing: 2 });
-    doc.fontSize(9.5).fillColor(MUTED).font('Helvetica')
-       .text(outfit.whyItWorks || '', PAD + 14, whyCardTop + 24, { width: IW - 28, lineGap: 3 });
-
-    // Items
-    const itemsLabelY = whyCardTop + whyH + 12;
-    doc.fontSize(7).fillColor(GREY).font('Helvetica-Bold')
-       .text('THE ITEMS', PAD, itemsLabelY, { characterSpacing: 2 });
-
-    // Fetch images in parallel
-    const imageBuffers = await Promise.all((outfit.items || []).map(async item => {
-      let imageUrl = null;
-      for (const catItems of Object.values(products)) {
-        const match = catItems.find(p => p['Item Name'] === item.name);
-        if (match) { imageUrl = match['Image URL']; break; }
-      }
-      if (!imageUrl) return null;
-      try {
-        const imgResp = await axios.get(imageUrl, { responseType: 'arraybuffer', timeout: 5000 });
-        return Buffer.from(imgResp.data);
-      } catch { return null; }
-    }));
-
-    function truncate(str, maxChars) {
-      if (!str) return '';
-      return str.length > maxChars ? str.slice(0, maxChars - 1).trimEnd() + '\u2026' : str;
-    }
-
-    let itemY = itemsLabelY + 14;
-    const CARD_H = 72, IMG_W = 60, IMG_PAD = 8;
-
-    for (let itemIdx = 0; itemIdx < (outfit.items || []).length; itemIdx++) {
-      const item = outfit.items[itemIdx];
-      const imgBuffer = imageBuffers[itemIdx];
-      const tx = PAD + IMG_PAD + IMG_W + 10;
-      const priceColX = PAD + IW - 82;
-      const textW = priceColX - tx - 8;
-
-      doc.rect(PAD, itemY, IW, CARD_H).fill(CARD);
-      doc.rect(PAD, itemY, IW, CARD_H).strokeColor(BORDER).lineWidth(0.5).stroke();
-
-      const imgY = itemY + (CARD_H - IMG_W) / 2;
-      if (imgBuffer) {
-        try {
-          doc.save();
-          doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).clip();
-          doc.image(imgBuffer, PAD + IMG_PAD, imgY, { width: IMG_W, height: IMG_W, cover: [IMG_W, IMG_W] });
-          doc.restore();
-        } catch { doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).fill(CARD2); }
-      } else {
-        doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).fill(CARD2);
-      }
-
-      let productUrl = item.url || null;
-      if (!productUrl) {
-        for (const catItems of Object.values(products)) {
-          const match = catItems.find(p => p['Item Name'] === item.name);
-          if (match && match['Product URL']) { productUrl = match['Product URL']; break; }
-        }
-      }
-
-      doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold')
-         .text((item.category || '').toUpperCase(), tx, itemY + 10, { width: textW, lineBreak: false, characterSpacing: 1.5 });
-      doc.fontSize(10).fillColor(productUrl ? GREEN : WHITE).font('Helvetica-Bold')
-         .text(truncate(item.name, Math.floor(textW / 6.2)), tx, itemY + 22,
-           { width: textW, lineBreak: false, ...(productUrl ? { link: productUrl } : {}) });
-      doc.fontSize(8.5).fillColor(GREY).font('Helvetica')
-         .text(truncate(item.why, Math.floor(textW / 5.3)), tx, itemY + 38, { width: textW, lineBreak: false });
-
-      if (productUrl) {
-        doc.fontSize(16).fillColor(GREEN).font('Helvetica-Bold')
-           .text(item.price || '', priceColX, itemY + 14, { width: 80, align: 'right', lineBreak: false, link: productUrl });
-      } else {
-        doc.fontSize(16).fillColor(GREEN).font('Helvetica-Bold')
-           .text(item.price || '', priceColX, itemY + 14, { width: 80, align: 'right', lineBreak: false });
-      }
-      doc.fontSize(8).fillColor(GREY).font('Helvetica')
-         .text(item.brand || '', priceColX, itemY + 37, { width: 80, align: 'right', lineBreak: false });
-
-      itemY += CARD_H + 6;
-    }
-
-    // How to wear tip
-    doc.fontSize(9.5).font('Helvetica-Oblique');
-    const tipH = doc.heightOfString(outfit.howToWear || '', { width: IW - 28, lineGap: 2 }) + 30;
-    const tipYRaw = itemY + 10;
-    const tipYMax = PH - 28 - 14 - tipH;
-    const tipY = Math.min(tipYRaw, tipYMax);
-    lcard(PAD, tipY, IW, tipH, '#8C7B6B');
-    doc.fontSize(7).fillColor('#8C7B6B').font('Helvetica-Bold')
-       .text('HOW TO WEAR IT', PAD + 14, tipY + 10, { characterSpacing: 2 });
-    doc.fontSize(9.5).fillColor(MUTED).font('Helvetica-Oblique')
-       .text(outfit.howToWear || '', PAD + 14, tipY + 24, { width: IW - 28, lineGap: 2 });
-
-    footer();
-  }
-
-  // ── PAGE 8: WHERE TO INVEST ──
+  // ════════════════════════════════════════
+  // PAGE 5: 9 RECOMMENDED PIECES
+  // ════════════════════════════════════════
   doc.addPage();
   bg();
-  header('Where To Invest');
+  pageHeader('Your Recommended Pieces');
+  heroBlock('9 PIECES BUILT', 'AROUND YOU', 'Hand-picked from our database to match your style DNA and budget');
 
-  doc.rect(0, 40, PW, 90).fill('#0E0C0A');
-  doc.moveTo(0, 130).lineTo(PW, 130).strokeColor(BORDER).lineWidth(0.5).stroke();
-  doc.fontSize(22).fillColor(WHITE).font('Helvetica-Bold').text('WHERE TO', PAD, 52);
-  doc.fontSize(22).fillColor(GREEN).font('Helvetica-Bold').text('INVEST', PAD, 78);
+  const pieces = (content.recommendedPieces || []).slice(0, 9);
 
-  const shopColW = (IW - 12) / 2;
+  // Fetch images in parallel
+  const imageBuffers = await Promise.all(pieces.map(async piece => {
+    let imageUrl = null;
+    for (const catItems of Object.values(products)) {
+      const match = catItems.find(p => p['Item Name'] === piece.name);
+      if (match) { imageUrl = match['Image URL']; break; }
+    }
+    if (!imageUrl) return null;
+    try {
+      const imgResp = await axios.get(imageUrl, { responseType: 'arraybuffer', timeout: 5000 });
+      return Buffer.from(imgResp.data);
+    } catch { return null; }
+  }));
+
+  function truncate(str, maxChars) {
+    if (!str) return '';
+    return str.length > maxChars ? str.slice(0, maxChars - 1).trimEnd() + '\u2026' : str;
+  }
+
+  const CARD_H = 68, IMG_W = 56, IMG_PAD = 8;
+  let pieceY = 148;
+
+  for (let i = 0; i < pieces.length; i++) {
+    const piece = pieces[i];
+    const imgBuffer = imageBuffers[i];
+
+    if (pieceY + CARD_H > PH - 36) break;
+
+    const tx = PAD + IMG_PAD + IMG_W + 10;
+    const priceColX = PAD + IW - 80;
+    const textW = priceColX - tx - 8;
+
+    doc.rect(PAD, pieceY, IW, CARD_H).fill(CARD);
+    doc.rect(PAD, pieceY, IW, CARD_H).strokeColor(BORDER).lineWidth(0.5).stroke();
+
+    // Image
+    const imgY = pieceY + (CARD_H - IMG_W) / 2;
+    if (imgBuffer) {
+      try {
+        doc.save();
+        doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).clip();
+        doc.image(imgBuffer, PAD + IMG_PAD, imgY, { width: IMG_W, height: IMG_W, cover: [IMG_W, IMG_W] });
+        doc.restore();
+      } catch { doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).fill(CARD2); }
+    } else {
+      doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).fill(CARD2);
+    }
+
+    // Resolve URL
+    let productUrl = piece.url || null;
+    if (!productUrl) {
+      for (const catItems of Object.values(products)) {
+        const match = catItems.find(p => p['Item Name'] === piece.name);
+        if (match && match['Product URL']) { productUrl = match['Product URL']; break; }
+      }
+    }
+
+    // Category
+    doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold')
+       .text((piece.category || '').toUpperCase(), tx, pieceY + 9, { width: textW, lineBreak: false, characterSpacing: 1.5 });
+
+    // Name
+    const nameStr = truncate(piece.name, Math.floor(textW / 6.2));
+    doc.fontSize(10).fillColor(productUrl ? GREEN : WHITE).font('Helvetica-Bold')
+       .text(nameStr, tx, pieceY + 21, { width: textW, lineBreak: false, ...(productUrl ? { link: productUrl } : {}) });
+
+    // Why
+    const whyStr = truncate(piece.why, Math.floor(textW / 5.3));
+    doc.fontSize(8.5).fillColor(GREY).font('Helvetica')
+       .text(whyStr, tx, pieceY + 37, { width: textW, lineBreak: false });
+
+    // Price
+    if (productUrl) {
+      doc.fontSize(15).fillColor(GREEN).font('Helvetica-Bold')
+         .text(piece.price || '', priceColX, pieceY + 13, { width: 78, align: 'right', lineBreak: false, link: productUrl });
+    } else {
+      doc.fontSize(15).fillColor(GREEN).font('Helvetica-Bold')
+         .text(piece.price || '', priceColX, pieceY + 13, { width: 78, align: 'right', lineBreak: false });
+    }
+
+    // Brand
+    doc.fontSize(8).fillColor(GREY).font('Helvetica')
+       .text(piece.brand || '', priceColX, pieceY + 35, { width: 78, align: 'right', lineBreak: false });
+
+    pieceY += CARD_H + 5;
+  }
+
+  footer();
+
+  // ════════════════════════════════════════
+  // PAGE 6: WHERE TO INVEST
+  // ════════════════════════════════════════
+  doc.addPage();
+  bg();
+  pageHeader('Where To Invest');
+  heroBlock('WHERE TO', 'INVEST', 'Brands suited to your goal and budget');
+
   const shopItems = (content.whereToInvest || []).slice(0, 4);
+  const shopColW = (IW - 12) / 2;
 
   // Pre-calculate heights
   const shopHeights = shopItems.map(shop => {
-    const whyH = doc.fontSize(9).heightOfString(shop.why || '', { width: shopColW - 28, lineGap: 2 });
-    const bestForH = doc.fontSize(8).heightOfString(`Best for: ${shop.bestFor || ''}`, { width: shopColW - 28, lineGap: 2 });
+    const whyH = textH(shop.why || '', 9, 'Helvetica', shopColW - 28);
+    const bestForH = textH(`Best for: ${shop.bestFor || ''}`, 8, 'Helvetica-Oblique', shopColW - 28);
     return Math.max(whyH + bestForH + 80, 100);
   });
-  const row0H = Math.max(shopHeights[0] || 0, shopHeights[1] || 0);
-  const row1H = Math.max(shopHeights[2] || 0, shopHeights[3] || 0);
+  const row0H = Math.max(shopHeights[0] || 100, shopHeights[1] || 100);
+  const row1H = Math.max(shopHeights[2] || 100, shopHeights[3] || 100);
 
   shopItems.forEach((shop, i) => {
     const col = i % 2;
@@ -783,15 +752,15 @@ async function buildPDF(content, quizData, products) {
     doc.rect(sx, cardY, shopColW, rowH).fill(CARD);
     doc.rect(sx, cardY, 2, rowH).fill(GREEN);
 
-    doc.fontSize(32).fillColor(GREEN).font('Helvetica-Bold')
+    doc.fontSize(30).fillColor(GREEN).font('Helvetica-Bold')
        .text(`0${i + 1}`, sx + 14, cardY + 14, { lineBreak: false });
     doc.fontSize(13).fillColor(WHITE).font('Helvetica-Bold')
-       .text(shop.brand || '', sx + 14, cardY + 54, { width: shopColW - 28, lineBreak: false });
+       .text(shop.brand || '', sx + 14, cardY + 52, { width: shopColW - 28, lineBreak: false });
     doc.fontSize(9).fillColor(MUTED).font('Helvetica')
-       .text(shop.why || '', sx + 14, cardY + 74, { width: shopColW - 28, lineGap: 2 });
-    const shopWhyH = doc.fontSize(9).heightOfString(shop.why || '', { width: shopColW - 28, lineGap: 2 });
+       .text(shop.why || '', sx + 14, cardY + 72, { width: shopColW - 28, lineGap: 2 });
+    const shopWhyH = textH(shop.why || '', 9, 'Helvetica', shopColW - 28);
     doc.fontSize(8).fillColor(GREEN).font('Helvetica-Oblique')
-       .text(`Best for: ${shop.bestFor || ''}`, sx + 14, cardY + 76 + shopWhyH, { width: shopColW - 28, lineGap: 2 });
+       .text(`Best for: ${shop.bestFor || ''}`, sx + 14, cardY + 74 + shopWhyH, { width: shopColW - 28, lineGap: 2 });
   });
 
   // CTA pinned to bottom
@@ -811,6 +780,7 @@ async function buildPDF(content, quizData, products) {
     stream.on('error', reject);
   });
 }
+
 
 // ════════════════════════════════════════
 // Send email via ZeptoMail HTTP API
