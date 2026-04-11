@@ -69,8 +69,6 @@ function findDownloadByToken(token) {
 
 // ════════════════════════════════════════
 // STEP 1 — Save quiz answers
-// New fields: budget, struggles, lifestyle, goal
-// Removed: style, colours, brands, openToBrands
 // ════════════════════════════════════════
 app.post('/api/save-session', (req, res) => {
   const { budget, struggles, lifestyle, goal, fit, email } = req.body;
@@ -206,7 +204,6 @@ async function generateAndStoreReport(sessionId, quizData, userEmail) {
 
 // ════════════════════════════════════════
 // Fetch products from Google Sheet
-// Now filters only on budget — goal/lifestyle drives style direction
 // ════════════════════════════════════════
 async function fetchProducts(budget) {
   const auth = new google.auth.GoogleAuth({
@@ -230,7 +227,6 @@ async function fetchProducts(budget) {
   const budgetMap = { 'Under £30': 30, '£30–£60': 60, '£60–£100': 100, '£100+': 9999 };
   const maxPrice = budgetMap[budget] || 60;
 
-  // Filter by budget and active status only
   const filtered = products.filter(p => {
     const price = parseFloat(p['Price']) || 0;
     const active = !p['Status'] || p['Status'].toLowerCase() === 'active';
@@ -239,7 +235,6 @@ async function fetchProducts(budget) {
 
   console.log(`[fetchProducts] budget=${maxPrice}, filtered=${filtered.length} active products`);
 
-  // Group by category and shuffle randomly
   const byCategory = {};
   filtered.forEach(p => {
     const cat = p['Category'] || 'Other';
@@ -271,6 +266,13 @@ async function generateReportContent(quizData, products) {
     }));
   }
 
+  // FIX: Build a flat list of all available product names so Claude knows exactly
+  // what it can pick from — prevents hallucinated or off-list picks
+  const allAvailableProducts = [];
+  for (const [cat, items] of Object.entries(productSummary)) {
+    items.forEach(p => allAvailableProducts.push({ ...p, category: cat }));
+  }
+
   const prompt = `You are the Outfitify AI stylist. You write like a senior personal stylist who has worked with hundreds of men — direct, confident, specific and authoritative. You never write generic advice. Every single sentence must be tied to this customer's specific answers.
 
 CUSTOMER PROFILE:
@@ -280,8 +282,14 @@ CUSTOMER PROFILE:
 - Style goal and aesthetic direction: ${quizData.goal} (use this to drive the entire style identity — if they said old money/quiet luxury, the report should reflect that aesthetic; if streetwear/oversized, reflect that; if gym-to-street, reflect that. This is the north star for everything.)
 - How clothes fit them: ${quizData.fit}
 
-AVAILABLE PRODUCTS (use these as outfit illustrations — select 3 outfits of 3-4 items each):
-${JSON.stringify(productSummary, null, 2)}
+AVAILABLE PRODUCTS — you MUST only recommend products from this exact list. Do not recommend any product not listed here:
+${JSON.stringify(allAvailableProducts, null, 2)}
+
+CRITICAL CONSISTENCY RULES — violations will break the customer's trust:
+1. Your recommended pieces MUST be consistent with the style advice in the report. If the report tells the customer to avoid oversized fits, do NOT recommend any product with "oversized" in the name. If the report says to avoid loose fits, do not recommend "relaxed fit" items. Every recommended piece must be an example of the advice you gave, not a contradiction of it.
+2. Only recommend products whose colours appear in the colour palette you defined. If you define a palette of charcoal, white, navy and brown, do not recommend a pink shirt or a bright orange jacket.
+3. The "why" for each recommended piece must reference a specific detail — fit, fabric, or construction detail — that makes it right for this customer. Never write generic praise like "this is a great piece" or "this will work well for you".
+4. Never recommend a product just because it exists in the list. Only recommend it if it genuinely fits the customer's style DNA and goal.
 
 TONE RULES — follow these strictly:
 - Write in second person ("you", "your") — never third person
@@ -309,7 +317,7 @@ Generate a style report with exactly this JSON structure (JSON only, no markdown
     "theTruth": "One single bold statement — the core insight that reframes how they think about their style problem. Make it feel like something they have never heard before."
   },
   "styleDNA": {
-    "silhouette": "Exactly what silhouette works for their body, goal and lifestyle — use their fit answer to give specific proportions advice. E.g. if clothes are baggy, recommend slimmer cuts and layering to add structure. If tight on arms/shoulders, recommend relaxed fits with more room through the chest and shoulder. Be specific about what to look for and what to avoid.",,
+    "silhouette": "Exactly what silhouette works for their body, goal and lifestyle — use their fit answer to give specific proportions advice. E.g. if clothes are baggy, recommend slimmer cuts and layering to add structure. If tight on arms/shoulders, recommend relaxed fits with more room through the chest and shoulder. Be specific about what to look for and what to avoid.",
     "fitLanguage": "The exact fit vocabulary they should use when shopping — specific terms like 'relaxed shoulder', 'tapered leg', 'dropped hem' that they can actually search for",
     "fabrics": "Which fabrics work for their specific lifestyle and why — tied to their actual week, not generic quality advice",
     "colourUsage": "How to actually use their palette day to day — specific ratios, which colours to use as base vs accent, how to combine them",
@@ -355,13 +363,13 @@ Generate a style report with exactly this JSON structure (JSON only, no markdown
   "recommendedPieces": [
     {
       "category": "Top/Bottoms/Shoes/Hoodie/Jacket",
-      "name": "exact product name from the list above",
+      "name": "exact product name from the available products list above",
       "brand": "brand name",
       "price": "£XX",
-      "url": "exact product url from the list above",
-      "why": "One sentence — why this specific piece works for their style DNA, goal and lifestyle. Reference the specific fit, fabric or detail that makes it right for them. Never generic praise."
+      "url": "exact product url from the available products list above",
+      "why": "One sentence — why this specific piece works for their style DNA, goal and lifestyle. Reference the specific fit, fabric or detail that makes it right for them. Must be consistent with the style advice in this report — if the report says avoid oversized, do not pick an oversized item."
     }
-  ]
+  ],
   "whereToInvest": [
     {
       "brand": "Brand name",
@@ -390,7 +398,6 @@ Rules:
   const text = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
   const parsed = JSON.parse(text);
 
-  // Log the full output so we can review quality before PDF rebuild
   console.log('=== CLAUDE OUTPUT ===');
   console.log(JSON.stringify(parsed, null, 2));
   console.log('=== END OUTPUT ===');
@@ -421,6 +428,31 @@ async function buildPDF(content, quizData, products) {
   const RED    = '#C4886A';
 
   const PW = 595, PH = 842, PAD = 50, IW = 495;
+
+  // FIX: Replaced character-count-based truncation with PDFKit's own heightOfString
+  // to determine if text fits, then truncate by word rather than raw character slice.
+  // This prevents mid-word cuts and the ellipsis appearing mid-sentence.
+  function truncateToFit(str, maxWidth, fontSize, fontName, maxLines) {
+    if (!str) return '';
+    doc.fontSize(fontSize).font(fontName || 'Helvetica');
+    const lineH = fontSize * 1.2;
+    const maxH = maxLines * lineH;
+    if (doc.heightOfString(str, { width: maxWidth }) <= maxH) return str;
+    // Binary-search on word count until it fits
+    const words = str.split(' ');
+    let lo = 1, hi = words.length, best = words[0];
+    while (lo <= hi) {
+      const mid = Math.floor((lo + hi) / 2);
+      const candidate = words.slice(0, mid).join(' ') + '\u2026';
+      if (doc.heightOfString(candidate, { width: maxWidth }) <= maxH) {
+        best = candidate;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return best;
+  }
 
   function bg() { doc.rect(0, 0, PW, PH).fill(BG); }
 
@@ -472,7 +504,6 @@ async function buildPDF(content, quizData, products) {
   doc.moveTo(0, 220).lineTo(PW, 220).strokeColor(BORDER).lineWidth(0.5).stroke();
   pageHeader();
 
-  // Style identity name — split into two lines
   const nameParts = (content.styleIdentity?.name || 'YOUR STYLE').split(' ');
   const nameL1 = nameParts[0] || '';
   const nameL2 = nameParts.slice(1).join(' ') || '';
@@ -481,14 +512,12 @@ async function buildPDF(content, quizData, products) {
   doc.fontSize(10).fillColor(GREY).font('Helvetica-Oblique')
      .text(content.styleIdentity?.tagline || '', PAD, 178, { width: IW });
 
-  // Intro card
   lcard(PAD, 232, IW, 82, GREEN);
   doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold')
      .text('ABOUT YOUR REPORT', PAD + 14, 242, { characterSpacing: 2 });
   doc.fontSize(10).fillColor(MUTED).font('Helvetica')
      .text(content.styleIdentity?.intro || '', PAD + 14, 258, { width: IW - 28, lineGap: 3 });
 
-  // Colour palette
   sectionLabel('YOUR COLOUR PALETTE', 330);
   const sw = 56, swGap = 11;
   (content.colourPalette?.colours || []).forEach((hex, i) => {
@@ -500,7 +529,6 @@ async function buildPDF(content, quizData, products) {
   doc.fontSize(9.5).fillColor(MUTED).font('Helvetica')
      .text(content.colourPalette?.rationale || '', PAD, 432, { width: IW, lineGap: 3 });
 
-  // What's inside
   sectionLabel("WHAT'S INSIDE", 474);
   const insideItems = [
     ['Why You\'ve Been Getting It Wrong', 'Your personal style diagnosis'],
@@ -528,19 +556,16 @@ async function buildPDF(content, quizData, products) {
   pageHeader("Why You've Been Getting It Wrong");
   heroBlock("WHY YOU'VE BEEN", "GETTING IT WRONG");
 
-  // Headline card
   const diagHeadline = content.diagnosis?.headline || '';
   lcard(PAD, 144, IW, 52, GREEN);
   doc.fontSize(13).fillColor(WHITE).font('Helvetica-Bold')
      .text(diagHeadline, PAD + 16, 158, { width: IW - 32, lineGap: 2 });
 
-  // Body
   const diagBody = content.diagnosis?.body || '';
   const diagBodyH = textH(diagBody, 10.5, 'Helvetica', IW) + 8;
   doc.fontSize(10.5).fillColor(MUTED).font('Helvetica')
      .text(diagBody, PAD, 212, { width: IW, lineGap: 4 });
 
-  // The Truth
   const truthY = 220 + diagBodyH;
   doc.rect(PAD, truthY, IW, 1).fill(GREEN);
   const theTruth = content.diagnosis?.theTruth || '';
@@ -568,7 +593,6 @@ async function buildPDF(content, quizData, products) {
   let dnaY = 144;
   dnaItems.forEach(([label, text, accent]) => {
     const h = Math.max(textH(text, 9.5, 'Helvetica', IW - 28) + 32, 52);
-    // Stop if we're going to overflow
     if (dnaY + h > PH - 40) return;
     lcard(PAD, dnaY, IW, h, accent);
     doc.fontSize(6.5).fillColor(accent).font('Helvetica-Bold')
@@ -588,18 +612,16 @@ async function buildPDF(content, quizData, products) {
   pageHeader('Your Wardrobe Blueprint');
   heroBlock('YOUR WARDROBE', 'BLUEPRINT');
 
-  // Strategy headline
   doc.fontSize(10).fillColor(GREY).font('Helvetica-Oblique')
      .text(content.wardrobeBlueprint?.headline || '', PAD, 144, { width: IW });
 
-  // 5 priorities
   let bpY = 168;
   (content.wardrobeBlueprint?.priorities || []).forEach((p, i) => {
     const textW = IW - 72;
     const whyH = textH(p.why || '', 9, 'Helvetica', textW);
     const shopH = textH(p.howToShop || '', 8, 'Helvetica-Oblique', textW);
     const h = Math.max(whyH + shopH + 36, 60);
-    if (bpY + h > PH - 80) return; // skip if overflow
+    if (bpY + h > PH - 80) return;
     doc.rect(PAD, bpY, IW, h).fill(CARD2);
     doc.rect(PAD, bpY, 2, h).fill(GREEN);
     doc.fontSize(24).fillColor(GREEN).font('Helvetica-Bold')
@@ -613,7 +635,6 @@ async function buildPDF(content, quizData, products) {
     bpY += h + 5;
   });
 
-  // Never buy again — pinned just above footer
   const neverY = Math.min(bpY + 8, PH - 100);
   doc.rect(PAD, neverY, IW, 1).fill(RED);
   doc.fontSize(7).fillColor(RED).font('Helvetica-Bold')
@@ -625,6 +646,9 @@ async function buildPDF(content, quizData, products) {
 
   // ════════════════════════════════════════
   // PAGE 5: 9 RECOMMENDED PIECES
+  // FIX: Increased image size from 56px to 76px for more visual impact.
+  // FIX: Replaced character-count truncation with word-aware truncateToFit()
+  //      so descriptions never cut mid-word or mid-sentence with a hanging ellipsis.
   // ════════════════════════════════════════
   doc.addPage();
   bg();
@@ -633,7 +657,6 @@ async function buildPDF(content, quizData, products) {
 
   const pieces = (content.recommendedPieces || []).slice(0, 9);
 
-  // Fetch images in parallel
   const imageBuffers = await Promise.all(pieces.map(async piece => {
     let imageUrl = null;
     for (const catItems of Object.values(products)) {
@@ -647,12 +670,8 @@ async function buildPDF(content, quizData, products) {
     } catch { return null; }
   }));
 
-  function truncate(str, maxChars) {
-    if (!str) return '';
-    return str.length > maxChars ? str.slice(0, maxChars - 1).trimEnd() + '\u2026' : str;
-  }
-
-  const CARD_H = 68, IMG_W = 56, IMG_PAD = 8;
+  // FIX: Increased from 56 to 76 — images are now meaningfully sized
+  const CARD_H = 80, IMG_W = 72, IMG_PAD = 8;
   let pieceY = 148;
 
   for (let i = 0; i < pieces.length; i++) {
@@ -661,14 +680,14 @@ async function buildPDF(content, quizData, products) {
 
     if (pieceY + CARD_H > PH - 36) break;
 
-    const tx = PAD + IMG_PAD + IMG_W + 10;
-    const priceColX = PAD + IW - 80;
+    const tx = PAD + IMG_PAD + IMG_W + 12;
+    const priceColX = PAD + IW - 88;
     const textW = priceColX - tx - 8;
 
     doc.rect(PAD, pieceY, IW, CARD_H).fill(CARD);
     doc.rect(PAD, pieceY, IW, CARD_H).strokeColor(BORDER).lineWidth(0.5).stroke();
 
-    // Image
+    // Image — larger and centred in card
     const imgY = pieceY + (CARD_H - IMG_W) / 2;
     if (imgBuffer) {
       try {
@@ -690,40 +709,42 @@ async function buildPDF(content, quizData, products) {
       }
     }
 
-    // Category
+    // Category label
     doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold')
-       .text((piece.category || '').toUpperCase(), tx, pieceY + 9, { width: textW, lineBreak: false, characterSpacing: 1.5 });
+       .text((piece.category || '').toUpperCase(), tx, pieceY + 10, { width: textW, lineBreak: false, characterSpacing: 1.5 });
 
-    // Name
-    const nameStr = truncate(piece.name, Math.floor(textW / 6.2));
+    // FIX: Product name — use truncateToFit(1 line) instead of character-count slice
+    const nameStr = truncateToFit(piece.name || '', textW, 10, 'Helvetica-Bold', 1);
     doc.fontSize(10).fillColor(productUrl ? GREEN : WHITE).font('Helvetica-Bold')
-       .text(nameStr, tx, pieceY + 21, { width: textW, lineBreak: false, ...(productUrl ? { link: productUrl } : {}) });
+       .text(nameStr, tx, pieceY + 23, { width: textW, lineBreak: false, ...(productUrl ? { link: productUrl } : {}) });
 
-    // Why
-    const whyStr = truncate(piece.why, Math.floor(textW / 5.3));
+    // FIX: Why description — use truncateToFit(2 lines) so it always shows a
+    // complete thought and never ends on an orphaned "…" after 3 words
+    const whyStr = truncateToFit(piece.why || '', textW, 8.5, 'Helvetica', 2);
     doc.fontSize(8.5).fillColor(GREY).font('Helvetica')
-       .text(whyStr, tx, pieceY + 37, { width: textW, lineBreak: false });
+       .text(whyStr, tx, pieceY + 40, { width: textW, lineGap: 1.5 });
 
     // Price
     if (productUrl) {
       doc.fontSize(15).fillColor(GREEN).font('Helvetica-Bold')
-         .text(piece.price || '', priceColX, pieceY + 13, { width: 78, align: 'right', lineBreak: false, link: productUrl });
+         .text(piece.price || '', priceColX, pieceY + 14, { width: 86, align: 'right', lineBreak: false, link: productUrl });
     } else {
       doc.fontSize(15).fillColor(GREEN).font('Helvetica-Bold')
-         .text(piece.price || '', priceColX, pieceY + 13, { width: 78, align: 'right', lineBreak: false });
+         .text(piece.price || '', priceColX, pieceY + 14, { width: 86, align: 'right', lineBreak: false });
     }
 
     // Brand
     doc.fontSize(8).fillColor(GREY).font('Helvetica')
-       .text(piece.brand || '', priceColX, pieceY + 35, { width: 78, align: 'right', lineBreak: false });
+       .text(piece.brand || '', priceColX, pieceY + 37, { width: 86, align: 'right', lineBreak: false });
 
-    pieceY += CARD_H + 5;
+    pieceY += CARD_H + 4;
   }
 
   footer();
 
   // ════════════════════════════════════════
   // PAGE 6: WHERE TO INVEST
+  // FIX: Replaced weak "retake the quiz" CTA with a stronger referral/share prompt
   // ════════════════════════════════════════
   doc.addPage();
   bg();
@@ -733,7 +754,6 @@ async function buildPDF(content, quizData, products) {
   const shopItems = (content.whereToInvest || []).slice(0, 4);
   const shopColW = (IW - 12) / 2;
 
-  // Pre-calculate heights
   const shopHeights = shopItems.map(shop => {
     const whyH = textH(shop.why || '', 9, 'Helvetica', shopColW - 28);
     const bestForH = textH(`Best for: ${shop.bestFor || ''}`, 8, 'Helvetica-Oblique', shopColW - 28);
@@ -763,14 +783,16 @@ async function buildPDF(content, quizData, products) {
        .text(`Best for: ${shop.bestFor || ''}`, sx + 14, cardY + 74 + shopWhyH, { width: shopColW - 28, lineGap: 2 });
   });
 
-  // CTA pinned to bottom
-  const ctaY = PH - 28 - 12 - 44;
-  doc.rect(PAD, ctaY, IW, 44).fill(CARD2);
-  doc.rect(PAD, ctaY, IW, 44).strokeColor(GREEN).lineWidth(0.5).stroke();
+  // FIX: Replaced "retake the quiz" CTA with a referral prompt — more compelling
+  // close that plants a seed for word-of-mouth without feeling desperate
+  const ctaY = PH - 28 - 12 - 56;
+  doc.rect(PAD, ctaY, IW, 56).fill(CARD2);
+  doc.rect(PAD, ctaY, IW, 56).strokeColor(GREEN).lineWidth(0.5).stroke();
+  doc.rect(PAD, ctaY, 2, 56).fill(GREEN);
   doc.fontSize(11).fillColor(WHITE).font('Helvetica-Bold')
-     .text('Ready to level up further?', PAD, ctaY + 10, { width: IW, align: 'center' });
-  doc.fontSize(9).fillColor(GREEN).font('Helvetica')
-     .text('Retake the quiz anytime at outfitify.co.uk', PAD, ctaY + 26, { width: IW, align: 'center' });
+     .text('Know someone who needs this?', PAD + 16, ctaY + 12, { width: IW - 32, align: 'left' });
+  doc.fontSize(9).fillColor(MUTED).font('Helvetica')
+     .text('Share outfitify.co.uk — every report is built fresh, personalised to whoever takes the quiz.', PAD + 16, ctaY + 30, { width: IW - 32 });
 
   footer();
   doc.end();
