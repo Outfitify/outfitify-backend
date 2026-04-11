@@ -290,6 +290,9 @@ CRITICAL CONSISTENCY RULES — violations will break the customer's trust:
 2. Only recommend products whose colours appear in the colour palette you defined. If you define a palette of charcoal, white, navy and brown, do not recommend a pink shirt or a bright orange jacket.
 3. The "why" for each recommended piece must reference a specific detail — fit, fabric, or construction detail — that makes it right for this customer. Never write generic praise like "this is a great piece" or "this will work well for you".
 4. Never recommend a product just because it exists in the list. Only recommend it if it genuinely fits the customer's style DNA and goal.
+5. Do NOT recommend sportswear, activewear, gym wear, or athletic/performance products (e.g. Dri-FIT, training tops, running gear, gym shorts) UNLESS the customer's lifestyle or goal explicitly mentions sport, gym, or athletic activity. A "varied lifestyle" or "active social life" does NOT count — those are style contexts, not gym contexts. If in doubt, skip the athletic product and pick something more versatile.
+6. Do NOT recommend products with "jogger", "comfort waist", "sweatpant", or "lounge" in the name when the report's style advice calls for tailored, structured, or smart-casual silhouettes. These descriptors directly contradict structured style advice.
+7. Brand credibility must match the report's positioning. Do not recommend ultra-fast-fashion brands (e.g. BoohooMan, Shein, PrettyLittleThing) in a report positioned as intentional, premium, or quality-focused — it undermines the entire tone. Stick to high-street brands with genuine credibility at the relevant price point.
 
 TONE RULES — follow these strictly:
 - Write in second person ("you", "your") — never third person
@@ -498,38 +501,55 @@ async function buildPDF(content, quizData, products) {
 
   // ════════════════════════════════════════
   // PAGE 1: COVER
+  // Redesigned for breathing room — hero is taller, sections have generous
+  // vertical gaps, "What's Inside" cards are larger and sit near the bottom
   // ════════════════════════════════════════
   bg();
-  doc.rect(0, 40, PW, 180).fill('#0E0C0A');
-  doc.moveTo(0, 220).lineTo(PW, 220).strokeColor(BORDER).lineWidth(0.5).stroke();
+
+  // Hero band — taller (40→240) gives the identity name room to breathe
+  doc.rect(0, 40, PW, 200).fill('#0E0C0A');
+  doc.moveTo(0, 240).lineTo(PW, 240).strokeColor(BORDER).lineWidth(0.5).stroke();
   pageHeader();
 
+  // Style identity name — split across two lines with more vertical space
   const nameParts = (content.styleIdentity?.name || 'YOUR STYLE').split(' ');
   const nameL1 = nameParts[0] || '';
   const nameL2 = nameParts.slice(1).join(' ') || '';
-  doc.fontSize(52).fillColor(WHITE).font('Helvetica-Bold').text(nameL1.toUpperCase(), PAD, 58);
-  doc.fontSize(52).fillColor(GREEN).font('Helvetica-Bold').text(nameL2.toUpperCase(), PAD, 112);
+  doc.fontSize(54).fillColor(WHITE).font('Helvetica-Bold').text(nameL1.toUpperCase(), PAD, 60);
+  doc.fontSize(54).fillColor(GREEN).font('Helvetica-Bold').text(nameL2.toUpperCase(), PAD, 118);
+
+  // Tagline sits inside the hero band with clear separation
   doc.fontSize(10).fillColor(GREY).font('Helvetica-Oblique')
-     .text(content.styleIdentity?.tagline || '', PAD, 178, { width: IW });
+     .text(content.styleIdentity?.tagline || '', PAD, 194, { width: IW });
 
-  lcard(PAD, 232, IW, 82, GREEN);
+  // About card — starts 24px below the hero divider, taller to avoid cramping
+  const introText = content.styleIdentity?.intro || '';
+  const introH = Math.max(textH(introText, 10, 'Helvetica', IW - 28) + 36, 88);
+  lcard(PAD, 256, IW, introH, GREEN);
   doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold')
-     .text('ABOUT YOUR REPORT', PAD + 14, 242, { characterSpacing: 2 });
+     .text('ABOUT YOUR REPORT', PAD + 14, 266, { characterSpacing: 2 });
   doc.fontSize(10).fillColor(MUTED).font('Helvetica')
-     .text(content.styleIdentity?.intro || '', PAD + 14, 258, { width: IW - 28, lineGap: 3 });
+     .text(introText, PAD + 14, 282, { width: IW - 28, lineGap: 3 });
 
-  sectionLabel('YOUR COLOUR PALETTE', 330);
-  const sw = 56, swGap = 11;
+  // Colour palette — 20px gap below intro card
+  const paletteY = 256 + introH + 20;
+  sectionLabel('YOUR COLOUR PALETTE', paletteY);
+  const sw = 58, swGap = 10;
+  const swatchY = paletteY + 20;
   (content.colourPalette?.colours || []).forEach((hex, i) => {
     const x = PAD + i * (sw + swGap);
-    doc.rect(x, 352, sw, sw).fill(hex);
+    doc.rect(x, swatchY, sw, sw).fill(hex);
     doc.fontSize(7.5).fillColor(GREY).font('Helvetica')
-       .text((content.colourPalette?.labels || [])[i] || '', x, 414, { width: sw, align: 'center' });
+       .text((content.colourPalette?.labels || [])[i] || '', x, swatchY + sw + 6, { width: sw, align: 'center' });
   });
+  const rationaleY = swatchY + sw + 22;
   doc.fontSize(9.5).fillColor(MUTED).font('Helvetica')
-     .text(content.colourPalette?.rationale || '', PAD, 432, { width: IW, lineGap: 3 });
+     .text(content.colourPalette?.rationale || '', PAD, rationaleY, { width: IW, lineGap: 3 });
 
-  sectionLabel("WHAT'S INSIDE", 474);
+  // "What's Inside" — calculate position from rationale height, pin to bottom if needed
+  const rationaleH = textH(content.colourPalette?.rationale || '', 9.5, 'Helvetica', IW);
+  const insideY = Math.max(rationaleY + rationaleH + 24, PH - 28 - 130);
+  sectionLabel("WHAT'S INSIDE", insideY);
   const insideItems = [
     ['Why You\'ve Been Getting It Wrong', 'Your personal style diagnosis'],
     ['Your Style DNA', 'Silhouette, fit, fabrics & colour'],
@@ -539,9 +559,10 @@ async function buildPDF(content, quizData, products) {
   insideItems.forEach(([title, desc], i) => {
     const col = i % 2, row = Math.floor(i / 2);
     const cardW = (IW - 10) / 2;
-    const x = PAD + col * (cardW + 10), y = 496 + row * 56;
-    doc.rect(x, y, cardW, 48).fill(CARD2);
-    doc.rect(x, y, 2, 48).fill(GREEN);
+    const x = PAD + col * (cardW + 10);
+    const y = insideY + 18 + row * 54;
+    doc.rect(x, y, cardW, 46).fill(CARD2);
+    doc.rect(x, y, 2, 46).fill(GREEN);
     doc.fontSize(9.5).fillColor(WHITE).font('Helvetica-Bold').text(title, x + 14, y + 8, { width: cardW - 24 });
     doc.fontSize(8).fillColor(GREY).font('Helvetica').text(desc, x + 14, y + 26, { width: cardW - 24 });
   });
@@ -670,8 +691,9 @@ async function buildPDF(content, quizData, products) {
     } catch { return null; }
   }));
 
-  // FIX: Increased from 56 to 76 — images are now meaningfully sized
-  const CARD_H = 80, IMG_W = 72, IMG_PAD = 8;
+  // CARD_H=70, IMG_W=64, gap=3 → 9 cards = 9×73 = 657px, fits within ~666px available
+  // (PH=842, footer=28, hero bottom=148, so available = 842-28-148 = 666px)
+  const CARD_H = 70, IMG_W = 64, IMG_PAD = 8;
   let pieceY = 148;
 
   for (let i = 0; i < pieces.length; i++) {
@@ -687,7 +709,7 @@ async function buildPDF(content, quizData, products) {
     doc.rect(PAD, pieceY, IW, CARD_H).fill(CARD);
     doc.rect(PAD, pieceY, IW, CARD_H).strokeColor(BORDER).lineWidth(0.5).stroke();
 
-    // Image — larger and centred in card
+    // Image
     const imgY = pieceY + (CARD_H - IMG_W) / 2;
     if (imgBuffer) {
       try {
@@ -711,33 +733,36 @@ async function buildPDF(content, quizData, products) {
 
     // Category label
     doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold')
-       .text((piece.category || '').toUpperCase(), tx, pieceY + 10, { width: textW, lineBreak: false, characterSpacing: 1.5 });
+       .text((piece.category || '').toUpperCase(), tx, pieceY + 8, { width: textW, lineBreak: false, characterSpacing: 1.5 });
 
-    // FIX: Product name — use truncateToFit(1 line) instead of character-count slice
+    // Product name — underlined when linked so customers know it's clickable
     const nameStr = truncateToFit(piece.name || '', textW, 10, 'Helvetica-Bold', 1);
     doc.fontSize(10).fillColor(productUrl ? GREEN : WHITE).font('Helvetica-Bold')
-       .text(nameStr, tx, pieceY + 23, { width: textW, lineBreak: false, ...(productUrl ? { link: productUrl } : {}) });
+       .text(nameStr, tx, pieceY + 20, {
+         width: textW,
+         lineBreak: false,
+         ...(productUrl ? { link: productUrl, underline: true } : {})
+       });
 
-    // FIX: Why description — use truncateToFit(2 lines) so it always shows a
-    // complete thought and never ends on an orphaned "…" after 3 words
+    // Why description — 2 lines max, word-aware truncation
     const whyStr = truncateToFit(piece.why || '', textW, 8.5, 'Helvetica', 2);
     doc.fontSize(8.5).fillColor(GREY).font('Helvetica')
-       .text(whyStr, tx, pieceY + 40, { width: textW, lineGap: 1.5 });
+       .text(whyStr, tx, pieceY + 36, { width: textW, lineGap: 1.5 });
 
-    // Price
+    // Price — also linked
     if (productUrl) {
       doc.fontSize(15).fillColor(GREEN).font('Helvetica-Bold')
-         .text(piece.price || '', priceColX, pieceY + 14, { width: 86, align: 'right', lineBreak: false, link: productUrl });
+         .text(piece.price || '', priceColX, pieceY + 12, { width: 86, align: 'right', lineBreak: false, link: productUrl });
     } else {
       doc.fontSize(15).fillColor(GREEN).font('Helvetica-Bold')
-         .text(piece.price || '', priceColX, pieceY + 14, { width: 86, align: 'right', lineBreak: false });
+         .text(piece.price || '', priceColX, pieceY + 12, { width: 86, align: 'right', lineBreak: false });
     }
 
     // Brand
     doc.fontSize(8).fillColor(GREY).font('Helvetica')
-       .text(piece.brand || '', priceColX, pieceY + 37, { width: 86, align: 'right', lineBreak: false });
+       .text(piece.brand || '', priceColX, pieceY + 34, { width: 86, align: 'right', lineBreak: false });
 
-    pieceY += CARD_H + 4;
+    pieceY += CARD_H + 3;
   }
 
   footer();
