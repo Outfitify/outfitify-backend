@@ -315,15 +315,26 @@ CUSTOMER PROFILE:
 AVAILABLE PRODUCTS — you MUST only recommend products from this exact list. Do not recommend any product not listed here:
 ${JSON.stringify(allAvailableProducts, null, 2)}
 
-CRITICAL CONSISTENCY RULES — violations will break the customer's trust:
-1. Your recommended pieces MUST be consistent with the style advice in the report. If the report tells the customer to avoid oversized fits, do NOT recommend any product with "oversized" in the name. If the report says to avoid loose fits, do not recommend "relaxed fit" items. Every recommended piece must be an example of the advice you gave, not a contradiction of it.
-2. Only recommend products whose colours appear in the colour palette you defined. If you define a palette of charcoal, white, navy and brown, do not recommend a pink shirt or a bright orange jacket.
-3. The "why" for each recommended piece must reference a specific detail — fit, fabric, or construction detail — that makes it right for this customer. Never write generic praise like "this is a great piece" or "this will work well for you".
-4. Never recommend a product just because it exists in the list. Only recommend it if it genuinely fits the customer's style DNA and goal.
-5. Do NOT recommend sportswear, activewear, gym wear, or athletic/performance products (e.g. Dri-FIT, training tops, running gear, gym shorts) UNLESS the customer's lifestyle or goal explicitly mentions sport, gym, or athletic activity. A "varied lifestyle" or "active social life" does NOT count — those are style contexts, not gym contexts. If in doubt, skip the athletic product and pick something more versatile.
-6. Do NOT recommend products with "jogger", "comfort waist", "sweatpant", or "lounge" in the name when the report's style advice calls for tailored, structured, or smart-casual silhouettes. These descriptors directly contradict structured style advice.
-7. Brand credibility must match the report's positioning. Do not recommend ultra-fast-fashion brands (e.g. BoohooMan, Shein, PrettyLittleThing) in a report positioned as intentional, premium, or quality-focused — it undermines the entire tone. Stick to high-street brands with genuine credibility at the relevant price point.
-8. Some products in the list are marked with a note: "slightly over budget — only option available in this category". If you recommend one of these, acknowledge it honestly in the "why" field — e.g. "This is slightly above your usual budget but it is the strongest option in this category and worth the investment for the quality." Never silently recommend an over-budget item as if it is within budget.
+CRITICAL CONSISTENCY RULES — run this checklist on every single recommended piece before including it. A product that fails any check must be replaced, no exceptions.
+Before selecting any recommended piece, you must complete this internal checklist. Treat it as a hard filter — if a product fails any check, skip it and pick the next best option.
+
+FIT NAME CHECK — scan the product name for these words. If your style advice says fitted/structured/tailored, SKIP any product whose name contains: "loose", "boxy", "relaxed", "oversized", "baggy", "wide", "slouch", "regular fit" (when fitted is advised). If your style advice says relaxed/oversized, SKIP any product whose name contains: "slim", "skinny", "fitted", "tapered" (when relaxed is advised). The product name must not contradict the silhouette you told this customer to build.
+
+FABRIC CHECK — cross-reference the product's fabric description against the fabrics section of the Style DNA you wrote. If you told this customer to seek stretch or technical fabrics (e.g. for an active lifestyle), do NOT recommend 100% linen, 100% cotton, or any rigid non-stretch fabric. If you told this customer to avoid technical/performance fabrics, do NOT recommend Dri-FIT, polyester blends, or moisture-wicking materials. The fabric of the pick must match the fabric advice you gave.
+
+PATTERN AND DETAIL CHECK — if your report calls for a clean, minimal, or understated aesthetic, do NOT recommend products with "stripe", "logo", "graphic", "print", "check", "plaid", or "pattern" in the name. A stripe tee is not a clean minimal pick. A graphic hoodie is not a minimalist pick.
+
+COLOUR CHECK — only recommend products whose colours are within the palette you defined. If you define a palette of charcoal, white, navy and brown, do not recommend a pink shirt or a bright orange jacket.
+
+SPORTSWEAR CHECK — do NOT recommend sportswear, activewear, gym wear, or athletic/performance products (e.g. Dri-FIT tops, training tees, running gear) UNLESS the customer's lifestyle or goal explicitly mentions sport, gym, or athletic activity. "Varied lifestyle" does not count.
+
+BRAND CHECK — brand credibility must match the report's positioning. Do not recommend ultra-fast-fashion brands (e.g. BoohooMan, Shein, PrettyLittleThing) in a report positioned as intentional or quality-focused.
+
+OVER-BUDGET CHECK — some products are marked "slightly over budget — only option available in this category". If you recommend one, acknowledge it in the "why" field: e.g. "This sits slightly above your usual budget but it is the only strong option in this category and worth the stretch."
+
+FINAL SENSE CHECK — before locking in your 9 picks, read back through the styleDNA and wardrobeBlueprint you wrote. Ask yourself: does each recommended piece look like something you would have pointed to as an example of that advice? If a pick contradicts anything you wrote — in fit, fabric, pattern, or silhouette — replace it.
+
+The "why" for each recommended piece must reference a specific detail — fit, fabric, or construction feature — that makes it right for this customer. Never write generic praise. Never recommend a product just because it exists in the list.
 
 TONE RULES — follow these strictly:
 - Write in second person ("you", "your") — never third person
