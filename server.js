@@ -277,7 +277,7 @@ CUSTOMER PROFILE:
 - Budget per item: ${quizData.budget}
 - Style struggles (what they selected — address these directly): ${quizData.struggles}
 - Lifestyle: ${quizData.lifestyle}
-- Style goal: ${quizData.goal}
+- Style goal and aesthetic direction: ${quizData.goal} (use this to drive the entire style identity — if they said old money/quiet luxury, the report should reflect that aesthetic; if streetwear/oversized, reflect that; if gym-to-street, reflect that. This is the north star for everything.)
 - How clothes fit them: ${quizData.fit}
 
 AVAILABLE PRODUCTS (use these as outfit illustrations — select 3 outfits of 3-4 items each):
