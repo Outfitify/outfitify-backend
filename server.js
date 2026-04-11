@@ -242,11 +242,40 @@ async function fetchProducts(budget) {
     byCategory[cat].push(p);
   });
 
+  // Also build an unfiltered-by-price lookup so we can fall back per category
+  const allByCategory = {};
+  products.forEach(p => {
+    if (!p['Item Name']) return;
+    const active = !p['Status'] || p['Status'].toLowerCase() === 'active';
+    if (!active) return;
+    const cat = p['Category'] || 'Other';
+    if (!allByCategory[cat]) allByCategory[cat] = [];
+    allByCategory[cat].push(p);
+  });
+
   const categories = ['Top', 'Bottoms', 'Shoes', 'Hoodie/Jacket'];
   const selected = {};
   categories.forEach(cat => {
-    const items = (byCategory[cat] || []).sort(() => Math.random() - 0.5);
-    selected[cat] = items.slice(0, 8);
+    let pool = (byCategory[cat] || []).sort(() => Math.random() - 0.5);
+
+    // If a category has fewer than 2 in-budget options, top up with the
+    // cheapest items from that category regardless of budget. This prevents
+    // Claude having no choice but to recommend an over-budget item, or worse,
+    // having nothing to recommend at all. Items added via fallback are flagged
+    // so the prompt can note they're slightly over budget.
+    if (pool.length < 2 && allByCategory[cat]) {
+      const overBudget = allByCategory[cat]
+        .filter(p => !pool.find(q => q['Item Name'] === p['Item Name']))
+        .sort((a, b) => (parseFloat(a['Price']) || 0) - (parseFloat(b['Price']) || 0));
+      const needed = Math.max(2 - pool.length, 0);
+      const extras = overBudget.slice(0, needed).map(p => ({ ...p, _overBudget: true }));
+      pool = [...pool, ...extras];
+      if (extras.length) {
+        console.log(`[fetchProducts] category="${cat}" short on budget options — added ${extras.length} fallback item(s): ${extras.map(p => p['Item Name']).join(', ')}`);
+      }
+    }
+
+    selected[cat] = pool.slice(0, 8);
   });
 
   return selected;
@@ -262,11 +291,12 @@ async function generateReportContent(quizData, products) {
       name: p['Item Name'],
       brand: p['Brand'],
       price: `£${p['Price']}`,
-      url: p['Product URL']
+      url: p['Product URL'],
+      ...(p._overBudget ? { note: 'slightly over budget — only option available in this category' } : {})
     }));
   }
 
-  // FIX: Build a flat list of all available product names so Claude knows exactly
+  // Build a flat list of all available product names so Claude knows exactly
   // what it can pick from — prevents hallucinated or off-list picks
   const allAvailableProducts = [];
   for (const [cat, items] of Object.entries(productSummary)) {
@@ -293,6 +323,7 @@ CRITICAL CONSISTENCY RULES — violations will break the customer's trust:
 5. Do NOT recommend sportswear, activewear, gym wear, or athletic/performance products (e.g. Dri-FIT, training tops, running gear, gym shorts) UNLESS the customer's lifestyle or goal explicitly mentions sport, gym, or athletic activity. A "varied lifestyle" or "active social life" does NOT count — those are style contexts, not gym contexts. If in doubt, skip the athletic product and pick something more versatile.
 6. Do NOT recommend products with "jogger", "comfort waist", "sweatpant", or "lounge" in the name when the report's style advice calls for tailored, structured, or smart-casual silhouettes. These descriptors directly contradict structured style advice.
 7. Brand credibility must match the report's positioning. Do not recommend ultra-fast-fashion brands (e.g. BoohooMan, Shein, PrettyLittleThing) in a report positioned as intentional, premium, or quality-focused — it undermines the entire tone. Stick to high-street brands with genuine credibility at the relevant price point.
+8. Some products in the list are marked with a note: "slightly over budget — only option available in this category". If you recommend one of these, acknowledge it honestly in the "why" field — e.g. "This is slightly above your usual budget but it is the strongest option in this category and worth the investment for the quality." Never silently recommend an over-budget item as if it is within budget.
 
 TONE RULES — follow these strictly:
 - Write in second person ("you", "your") — never third person
@@ -546,9 +577,10 @@ async function buildPDF(content, quizData, products) {
   doc.fontSize(9.5).fillColor(MUTED).font('Helvetica')
      .text(content.colourPalette?.rationale || '', PAD, rationaleY, { width: IW, lineGap: 3 });
 
-  // "What's Inside" — calculate position from rationale height, pin to bottom if needed
+  // "What's Inside" — flows naturally 24px below the rationale text.
+  // No pinning to bottom — content distributes evenly down the page.
   const rationaleH = textH(content.colourPalette?.rationale || '', 9.5, 'Helvetica', IW);
-  const insideY = Math.max(rationaleY + rationaleH + 24, PH - 28 - 130);
+  const insideY = rationaleY + rationaleH + 24;
   sectionLabel("WHAT'S INSIDE", insideY);
   const insideItems = [
     ['Why You\'ve Been Getting It Wrong', 'Your personal style diagnosis'],
