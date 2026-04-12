@@ -186,7 +186,7 @@ async function generateAndStoreReport(sessionId, quizData, userEmail) {
   activeJobs++;
   console.log(`Generating report for session ${sessionId}... (active jobs: ${activeJobs})`);
   try {
-    const products = await fetchProducts(quizData.budget);
+    const products = await fetchProducts(quizData.budget, quizData.goal);
     const reportContent = await generateReportContent(quizData, products);
     const pdfPath = await buildPDF(reportContent, quizData, products);
     const token = crypto.randomBytes(32).toString('hex');
@@ -204,8 +204,10 @@ async function generateAndStoreReport(sessionId, quizData, userEmail) {
 
 // ════════════════════════════════════════
 // Fetch products from Google Sheet
+// Now filters by Style tag derived from the customer's goal, so Claude
+// receives a pre-curated pool rather than the full 350-item catalogue.
 // ════════════════════════════════════════
-async function fetchProducts(budget) {
+async function fetchProducts(budget, goal) {
   const auth = new google.auth.GoogleAuth({
     credentials: JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON),
     scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
@@ -227,55 +229,109 @@ async function fetchProducts(budget) {
   const budgetMap = { 'Under £30': 30, '£30–£60': 60, '£60–£100': 100, '£100+': 9999 };
   const maxPrice = budgetMap[budget] || 60;
 
-  const filtered = products.filter(p => {
+  // ── Style tag mapping ──
+  // Map the customer's goal string to the Style tags used in the sheet.
+  // The sheet has 5 tags: Streetwear, Everyday Fits, Date Night/Going Out,
+  // Smart Casual/Workwear, Active/Gym wear.
+  // We derive which tags to prioritise from keywords in the goal answer.
+  // Each goal maps to a PRIMARY list (strongly preferred) and a FALLBACK
+  // list (used to top up if primary pool is thin in any category).
+  function getStyleTags(goal) {
+    const g = (goal || '').toLowerCase();
+    if (/street|hype|urban|skate|oversized|relaxed.*casual|casual.*relaxed/.test(g)) {
+      return { primary: ['Streetwear'], fallback: ['Everyday Fits'] };
+    }
+    if (/gym|athletic|sport|active|train|workout|performance|fitness/.test(g)) {
+      return { primary: ['Active/Gym wear'], fallback: ['Everyday Fits', 'Streetwear'] };
+    }
+    if (/smart.*casual|business.*casual|work|office|professional|corporate|hybrid/.test(g)) {
+      return { primary: ['Smart Casual/Workwear'], fallback: ['Everyday Fits', 'Date Night/Going Out'] };
+    }
+    if (/old money|quiet luxury|minimal|heritage|classic|preppy|trad/.test(g)) {
+      return { primary: ['Smart Casual/Workwear', 'Date Night/Going Out'], fallback: ['Everyday Fits'] };
+    }
+    if (/date|going out|night out|social|evening|party/.test(g)) {
+      return { primary: ['Date Night/Going Out'], fallback: ['Everyday Fits', 'Smart Casual/Workwear'] };
+    }
+    // Default: no strong signal — use broad everyday + smart casual
+    return { primary: ['Everyday Fits', 'Smart Casual/Workwear'], fallback: ['Streetwear', 'Date Night/Going Out'] };
+  }
+
+  const { primary, fallback } = getStyleTags(goal);
+  console.log(`[fetchProducts] goal="${goal}" → primary styles: [${primary}], fallback: [${fallback}]`);
+
+  // Helper: does a product match a given set of style tags?
+  function matchesStyle(p, tags) {
+    const s = (p['Style'] || '').trim();
+    return tags.some(t => s === t);
+  }
+
+  // Base filter: active + within budget
+  const inBudget = products.filter(p => {
     const price = parseFloat(p['Price']) || 0;
     const active = !p['Status'] || p['Status'].toLowerCase() === 'active';
     return price <= maxPrice && p['Item Name'] && active;
   });
 
-  console.log(`[fetchProducts] budget=${maxPrice}, filtered=${filtered.length} active products`);
-
-  const byCategory = {};
-  filtered.forEach(p => {
-    const cat = p['Category'] || 'Other';
-    if (!byCategory[cat]) byCategory[cat] = [];
-    byCategory[cat].push(p);
-  });
-
-  // Also build an unfiltered-by-price lookup so we can fall back per category
-  const allByCategory = {};
-  products.forEach(p => {
-    if (!p['Item Name']) return;
+  // Also keep all active items (any price) for over-budget fallback
+  const allActive = products.filter(p => {
     const active = !p['Status'] || p['Status'].toLowerCase() === 'active';
-    if (!active) return;
-    const cat = p['Category'] || 'Other';
-    if (!allByCategory[cat]) allByCategory[cat] = [];
-    allByCategory[cat].push(p);
+    return p['Item Name'] && active;
   });
+
+  console.log(`[fetchProducts] budget=£${maxPrice}, in-budget items=${inBudget.length}`);
 
   const categories = ['Top', 'Bottoms', 'Shoes', 'Hoodie/Jacket'];
   const selected = {};
-  categories.forEach(cat => {
-    let pool = (byCategory[cat] || []).sort(() => Math.random() - 0.5);
 
-    // If a category has fewer than 2 in-budget options, top up with the
-    // cheapest items from that category regardless of budget. This prevents
-    // Claude having no choice but to recommend an over-budget item, or worse,
-    // having nothing to recommend at all. Items added via fallback are flagged
-    // so the prompt can note they're slightly over budget.
-    if (pool.length < 2 && allByCategory[cat]) {
-      const overBudget = allByCategory[cat]
-        .filter(p => !pool.find(q => q['Item Name'] === p['Item Name']))
+  categories.forEach(cat => {
+    // Step 1: primary style + in budget
+    let pool = inBudget.filter(p => p['Category'] === cat && matchesStyle(p, primary));
+
+    // Step 2: if fewer than 4, top up with fallback style tags + in budget
+    if (pool.length < 4) {
+      const fallbackItems = inBudget.filter(p =>
+        p['Category'] === cat &&
+        matchesStyle(p, fallback) &&
+        !pool.find(q => q['Item Name'] === p['Item Name'])
+      );
+      pool = [...pool, ...fallbackItems];
+      if (fallbackItems.length) {
+        console.log(`[fetchProducts] category="${cat}" topped up with ${fallbackItems.length} fallback-style items`);
+      }
+    }
+
+    // Step 3: if still fewer than 4, open up to ANY style tag within budget
+    if (pool.length < 4) {
+      const anyStyle = inBudget.filter(p =>
+        p['Category'] === cat &&
+        !pool.find(q => q['Item Name'] === p['Item Name'])
+      );
+      pool = [...pool, ...anyStyle];
+      if (anyStyle.length) {
+        console.log(`[fetchProducts] category="${cat}" opened to all styles — added ${anyStyle.length} items`);
+      }
+    }
+
+    // Step 4: if still fewer than 2, use over-budget items as last resort
+    if (pool.length < 2) {
+      const overBudget = allActive
+        .filter(p =>
+          p['Category'] === cat &&
+          !pool.find(q => q['Item Name'] === p['Item Name'])
+        )
         .sort((a, b) => (parseFloat(a['Price']) || 0) - (parseFloat(b['Price']) || 0));
       const needed = Math.max(2 - pool.length, 0);
       const extras = overBudget.slice(0, needed).map(p => ({ ...p, _overBudget: true }));
       pool = [...pool, ...extras];
       if (extras.length) {
-        console.log(`[fetchProducts] category="${cat}" short on budget options — added ${extras.length} fallback item(s): ${extras.map(p => p['Item Name']).join(', ')}`);
+        console.log(`[fetchProducts] category="${cat}" OVER-BUDGET fallback — added: ${extras.map(p => p['Item Name']).join(', ')}`);
       }
     }
 
-    selected[cat] = pool.slice(0, 8);
+    // Shuffle and take up to 8 — Claude will see up to 4 of these
+    selected[cat] = pool.sort(() => Math.random() - 0.5).slice(0, 8);
+    console.log(`[fetchProducts] category="${cat}" final pool size: ${selected[cat].length}`);
   });
 
   return selected;
@@ -312,8 +368,10 @@ CUSTOMER PROFILE:
 - Style goal and aesthetic direction: ${quizData.goal} (use this to drive the entire style identity — if they said old money/quiet luxury, the report should reflect that aesthetic; if streetwear/oversized, reflect that; if gym-to-street, reflect that. This is the north star for everything.)
 - How clothes fit them: ${quizData.fit}
 
-AVAILABLE PRODUCTS — you MUST only recommend products from this exact list. Do not recommend any product not listed here:
+AVAILABLE PRODUCTS — these have been pre-filtered to match this customer's style direction and budget. You MUST only recommend products from this exact list. Do not recommend any product not listed here:
 ${JSON.stringify(allAvailableProducts, null, 2)}
+
+ONE BRAND PER SLOT — do not recommend the same brand twice within the same category. If you have picked an ASOS top, the next top must be from a different brand. Spread picks across brands where the pool allows it — a customer seeing three ASOS items in a row loses confidence in the personalisation.
 
 CRITICAL CONSISTENCY RULES — run this checklist on every single recommended piece before including it. A product that fails any check must be replaced, no exceptions.
 Before selecting any recommended piece, you must complete this internal checklist. Treat it as a hard filter — if a product fails any check, skip it and pick the next best option.
@@ -426,7 +484,7 @@ Generate a style report with exactly this JSON structure (JSON only, no markdown
 
 Rules:
 - wardrobeBlueprint.priorities must contain exactly 5 items in priority order
-- recommendedPieces must contain exactly 9 pieces selected from the products above — 3 tops, 2 bottoms, 2 shoes, 2 layers/jackets. Choose pieces that align with their style DNA and goal. They do not need to form complete outfits — they should be the 9 best individual pieces for this customer
+- recommendedPieces must contain between 6 and 9 pieces selected from the products above, targeting 3 tops, 2 bottoms, 2 shoes, 2 layers/jackets where possible. ONLY include a piece if it passes every check in the consistency checklist above. Quality over quantity — 6 excellent picks is better than 9 where some are forced or contradictory. Do not pad the list to hit 9.
 - whereToInvest must contain exactly 4 brands — real UK-accessible brands only
 - Include the exact product URL for each recommended piece from the list above
 - Keep language simple and direct — write for someone who knows nothing about fashion
@@ -597,7 +655,7 @@ async function buildPDF(content, quizData, products) {
     ['Why You\'ve Been Getting It Wrong', 'Your personal style diagnosis'],
     ['Your Style DNA', 'Silhouette, fit, fabrics & colour'],
     ['Your Wardrobe Blueprint', '5 priorities & what to buy first'],
-    ['9 Recommended Pieces', 'Hand-picked for your style & budget'],
+    ['Recommended Pieces', 'Hand-picked for your style & budget'],
   ];
   insideItems.forEach(([title, desc], i) => {
     const col = i % 2, row = Math.floor(i / 2);
@@ -709,17 +767,16 @@ async function buildPDF(content, quizData, products) {
   footer();
 
   // ════════════════════════════════════════
-  // PAGE 5: 9 RECOMMENDED PIECES
-  // FIX: Increased image size from 56px to 76px for more visual impact.
-  // FIX: Replaced character-count truncation with word-aware truncateToFit()
-  //      so descriptions never cut mid-word or mid-sentence with a hanging ellipsis.
+  // PAGE 5: RECOMMENDED PIECES (up to 9)
   // ════════════════════════════════════════
   doc.addPage();
   bg();
-  pageHeader('Your Recommended Pieces');
-  heroBlock('9 PIECES BUILT', 'AROUND YOU', 'Hand-picked from our database to match your style DNA and budget');
 
   const pieces = (content.recommendedPieces || []).slice(0, 9);
+  const pieceCount = pieces.length;
+
+  pageHeader('Your Recommended Pieces');
+  heroBlock(`${pieceCount} PIECES BUILT`, 'AROUND YOU', 'Hand-picked from our database to match your style DNA and budget');
 
   const imageBuffers = await Promise.all(pieces.map(async piece => {
     let imageUrl = null;
