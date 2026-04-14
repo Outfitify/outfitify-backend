@@ -6,6 +6,26 @@
 <title>Download Your Report — Outfitify</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+<!-- Meta Pixel Base Code -->
+<script>
+!function(f,b,e,v,n,t,s)
+{if(f.fbq)return;n=f.fbq=function(){n.callMethod?
+n.callMethod.apply(n,arguments):n.queue.push(arguments)};
+if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';
+n.queue=[];t=b.createElement(e);t.async=!0;
+t.src=v;s=b.getElementsByTagName(e)[0];
+s.parentNode.insertBefore(t,s)}(window, document,'script',
+'https://connect.facebook.net/en_US/fbevents.js');
+fbq('init', '869679278931485');
+fbq('track', 'PageView');
+</script>
+<noscript>
+  <img height="1" width="1" style="display:none"
+    src="https://www.facebook.com/tr?id=869679278931485&ev=PageView&noscript=1"/>
+</noscript>
+<!-- End Meta Pixel Base Code -->
+
 <style>
   :root { --blue:#3D3F8F; --green:#4CAF8A; --dark:#0E0E1A; --card:#16162A; --grey:#888899; --light:#E8E8F0; }
   * { margin:0; padding:0; box-sizing:border-box; }
@@ -198,6 +218,14 @@
     document.getElementById('stateLoading').classList.remove('active');
     document.getElementById('stateSuccess').classList.add('active');
     document.getElementById('downloadBtn').href = `${BACKEND}/api/download/${token}`;
+
+    // Fire Meta Pixel Purchase event
+    if (typeof fbq !== 'undefined') {
+      fbq('track', 'Purchase', {
+        value: 14.99,
+        currency: 'GBP'
+      });
+    }
   }
 
   function showError() {
