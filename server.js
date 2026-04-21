@@ -93,7 +93,7 @@ app.post('/api/create-checkout', async (req, res) => {
             description: 'Your personalised style diagnosis, blueprint, wardrobe formula and outfit examples — built around you.',
             images: ['https://outfitify.co.uk/assets/images/image04.png']
           },
-          unit_amount: 1499
+          unit_amount: 599  // £5.99
         },
         quantity: 1
       }],
