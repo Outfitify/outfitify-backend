@@ -65,7 +65,28 @@ function findDownloadByToken(token) {
   return null;
 }
 
-// STEP 1 — Save quiz answers (email removed — captured by Stripe at checkout)
+// ════════════════════════════════════════
+// FREE SESSION PERSISTENCE — 7-day disk storage for upgrade flow
+// ════════════════════════════════════════
+const FREE_SESSIONS_DIR = path.join(os.tmpdir(), 'outfitify-free-sessions');
+if (!fs.existsSync(FREE_SESSIONS_DIR)) fs.mkdirSync(FREE_SESSIONS_DIR, { recursive: true });
+
+function saveFreeSession(sessionId, data) {
+  fs.writeFileSync(path.join(FREE_SESSIONS_DIR, `${sessionId}.json`), JSON.stringify(data));
+}
+function getFreeSession(sessionId) {
+  const p = path.join(FREE_SESSIONS_DIR, `${sessionId}.json`);
+  if (!fs.existsSync(p)) return null;
+  try {
+    const data = JSON.parse(fs.readFileSync(p, 'utf8'));
+    if (Date.now() - data.createdAt > 604800000) { fs.unlinkSync(p); return null; }
+    return data;
+  } catch { return null; }
+}
+
+// ════════════════════════════════════════
+// STEP 1 — Save quiz answers
+// ════════════════════════════════════════
 app.post('/api/save-session', (req, res) => {
   const { budget, struggles, lifestyle, goal, fit } = req.body;
   if (!budget) return res.status(400).json({ error: 'Missing required fields' });
@@ -77,11 +98,37 @@ app.post('/api/save-session', (req, res) => {
   res.json({ sessionId });
 });
 
-// STEP 2 — Create Stripe Checkout Session
+// ════════════════════════════════════════
+// FREE REPORT — Generate and email basic report, persist session for upgrade
+// ════════════════════════════════════════
+app.post('/api/free-report', async (req, res) => {
+  const { budget, struggles, lifestyle, goal, fit, email } = req.body;
+  if (!budget || !email) return res.status(400).json({ error: 'Missing required fields' });
+  const sessionId = crypto.randomBytes(16).toString('hex');
+  saveFreeSession(sessionId, { budget, struggles, lifestyle, goal, fit, email, createdAt: Date.now() });
+  res.json({ success: true, sessionId });
+  // Generate async — don't block response
+  generateAndStoreReport(sessionId, { budget, struggles, lifestyle, goal, fit }, email, 'free').catch(err => {
+    console.error(`Free report generation failed for ${sessionId}:`, err);
+  });
+});
+
+// ════════════════════════════════════════
+// STEP 2 — Create Stripe Checkout Session (tiered)
+// ════════════════════════════════════════
 app.post('/api/create-checkout', async (req, res) => {
-  const { sessionId } = req.body;
-  if (!sessions.has(sessionId)) return res.status(400).json({ error: 'Session not found or expired' });
-  const quizData = sessions.get(sessionId);
+  const { sessionId, tier } = req.body;
+  const resolvedTier = tier || 'standard';
+  // Check in-memory first, then free session disk store (upgrade flow)
+  const quizData = sessions.get(sessionId) || getFreeSession(sessionId);
+  if (!quizData) return res.status(400).json({ error: 'Session not found or expired' });
+
+  const tierConfig = {
+    standard: { amount: 599, name: 'Outfitify Personal Style Blueprint — Standard' },
+    premium:  { amount: 999, name: 'Outfitify Personal Style Blueprint — Premium' },
+  };
+  const config = tierConfig[resolvedTier] || tierConfig.standard;
+
   try {
     const checkoutSession = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
@@ -89,19 +136,20 @@ app.post('/api/create-checkout', async (req, res) => {
         price_data: {
           currency: 'gbp',
           product_data: {
-            name: 'Outfitify Personal Style Blueprint',
+            name: config.name,
             description: 'Your personalised style diagnosis, blueprint, wardrobe formula and outfit examples — built around you.',
             images: ['https://outfitify.co.uk/assets/images/image04.png']
           },
-          unit_amount: 599  // £5.99
+          unit_amount: config.amount
         },
         quantity: 1
       }],
       mode: 'payment',
       success_url: `${process.env.SUCCESS_URL || "https://success.outfitify.co.uk"}?token={CHECKOUT_SESSION_ID}&sid=${sessionId}`,
-      cancel_url: `${process.env.UNLOCK_PAGE_URL}?sid=${sessionId}&cancelled=true`,
+      cancel_url: `${process.env.UNLOCK_PAGE_URL || "https://quiz.outfitify.co.uk"}?cancelled=true`,
       metadata: {
         sessionId,
+        tier: resolvedTier,
         budget:    quizData.budget    || '',
         struggles: quizData.struggles || '',
         lifestyle: quizData.lifestyle || '',
@@ -138,7 +186,8 @@ app.post('/webhook', async (req, res) => {
       goal:      session.metadata.goal,
       fit:       session.metadata.fit,
     };
-    generateAndStoreReport(sessionId, quizData, userEmail).catch(err => {
+    const tier = session.metadata.tier || 'standard';
+    generateAndStoreReport(sessionId, quizData, userEmail, tier).catch(err => {
       console.error(`Unhandled error in generateAndStoreReport for ${sessionId}:`, err);
     });
   }
@@ -164,18 +213,18 @@ app.get('/api/download/:token', (req, res) => {
   res.status(404).json({ error: 'Download link not found or expired' });
 });
 
-async function generateAndStoreReport(sessionId, quizData, userEmail) {
+async function generateAndStoreReport(sessionId, quizData, userEmail, tier = 'standard') {
   activeJobs++;
-  console.log(`Generating report for session ${sessionId}... (active jobs: ${activeJobs})`);
+  console.log(`Generating ${tier} report for session ${sessionId}... (active jobs: ${activeJobs})`);
   try {
     const products = await fetchProducts(quizData.budget, quizData.goal);
-    const reportContent = await generateReportContent(quizData, products);
-    const pdfPath = await buildPDF(reportContent, quizData, products);
+    const reportContent = await generateReportContent(quizData, products, tier);
+    const pdfPath = await buildPDF(reportContent, quizData, products, tier);
     const token = crypto.randomBytes(32).toString('hex');
     saveDownload(sessionId, { token, pdfPath, email: userEmail, createdAt: Date.now() });
     const downloadUrl = `${process.env.BASE_URL}/api/download/${token}`;
-    await sendEmail(userEmail, downloadUrl, reportContent.styleIdentity.name);
-    console.log(`Report ready for session ${sessionId}`);
+    await sendEmail(userEmail, downloadUrl, reportContent.styleIdentity.name, tier, sessionId);
+    console.log(`${tier} report ready for session ${sessionId}`);
   } catch (err) {
     console.error(`Report generation failed for ${sessionId}:`, err);
   } finally {
@@ -280,7 +329,7 @@ async function fetchProducts(budget, goal) {
   return selected;
 }
 
-async function generateReportContent(quizData, products) {
+async function generateReportContent(quizData, products, tier = 'standard') {
   const productSummary = {};
   for (const [cat, items] of Object.entries(products)) {
     productSummary[cat] = items.slice(0, 4).map(p => ({
@@ -297,7 +346,38 @@ async function generateReportContent(quizData, products) {
     items.forEach(p => allAvailableProducts.push({ ...p, category: cat }));
   }
 
+  // Tier-specific prompt instructions
+  const tierInstructions = {
+    free: `
+REPORT TIER: FREE
+Generate a basic style starter report. Keep it simple and surface-level — enough to make the customer feel understood but not enough to fully solve their problem. This creates desire to upgrade.
+- styleIdentity: name and tagline only — make it compelling so they want the full report
+- colourPalette: exactly 3 colours, no rationale text (leave rationale as empty string "")
+- diagnosis: headline only + 2-sentence body — identify the problem but don't solve it. Leave theTruth as empty string ""
+- styleDNA: leave ALL fields as empty strings — not included in free tier
+- wardrobeBlueprint: leave headline and ALL priorities as empty/null — not included in free tier. Leave neverBuyAgain and costPerWear as empty strings
+- recommendedPieces: exactly 2 items. NO url (set to ""), NO brand (set to ""), NO price (set to ""). Name should be a generic description only e.g. "A fitted white crew neck t-shirt in breathable cotton" — do NOT use actual product names from the list
+- whereToInvest: empty array []`,
+
+    standard: `
+REPORT TIER: STANDARD
+Generate the full report EXCEPT whereToInvest. Include everything else at full detail.
+- recommendedPieces: exactly 5 items with full brand, price and URL from the product list
+- whereToInvest: empty array [] — not included in standard tier
+- All other sections: full detail as normal`,
+
+    premium: `
+REPORT TIER: PREMIUM
+Generate the complete full report with everything included at maximum detail.
+- recommendedPieces: between 7 and 9 items with full brand, price and URL
+- whereToInvest: exactly 4 brands — full detail
+- wardrobeBlueprint: include neverBuyAgain and costPerWear at full detail
+- All sections: maximum depth and specificity`,
+  };
+
   const prompt = `You are the Outfitify AI stylist. You write like a senior personal stylist who has worked with hundreds of men — direct, confident, specific and authoritative. You never write generic advice. Every single sentence must be tied to this customer's specific answers.
+
+${tierInstructions[tier] || tierInstructions.standard}
 
 CUSTOMER PROFILE:
 - Budget per item: ${quizData.budget}
@@ -306,7 +386,7 @@ CUSTOMER PROFILE:
 - Style goal and aesthetic direction: ${quizData.goal}
 - How clothes fit them: ${quizData.fit}
 
-AVAILABLE PRODUCTS — You MUST only recommend products from this exact list:
+AVAILABLE PRODUCTS — You MUST only recommend products from this exact list (for paid tiers):
 ${JSON.stringify(allAvailableProducts, null, 2)}
 
 ONE BRAND PER SLOT — do not recommend the same brand twice within the same category.
@@ -406,7 +486,7 @@ Rules:
   return parsed;
 }
 
-async function buildPDF(content, quizData, products) {
+async function buildPDF(content, quizData, products, tier = 'standard') {
   const pdfPath = path.join(os.tmpdir(), `outfitify-${Date.now()}.pdf`);
   const doc = new PDFDocument({ size: 'A4', margin: 0, autoFirstPage: true });
   const stream = fs.createWriteStream(pdfPath);
@@ -417,6 +497,124 @@ async function buildPDF(content, quizData, products) {
   const CARD = '#141210', CARD2 = '#1C1916', RED = '#C4886A';
   const PW = 595, PH = 842, PAD = 50, IW = 495;
 
+  function bg() { doc.rect(0, 0, PW, PH).fill(BG); }
+  function pageHeader(sub) {
+    doc.rect(0, 0, PW, 36).fill(HEADER);
+    doc.rect(0, 35, PW, 1).fill(BORDER);
+    doc.fontSize(8).fillColor(WHITE).font('Helvetica-Bold').text('OUTFITIFY', 0, 11, { width: PW, align: 'center', characterSpacing: 6 });
+    if (sub) doc.fontSize(6.5).fillColor(GREY).font('Helvetica').text(sub.toUpperCase(), 0, 22, { width: PW, align: 'center', characterSpacing: 2 });
+  }
+  function footer() {
+    doc.rect(0, PH - 28, PW, 28).fill(HEADER);
+    doc.rect(0, PH - 28, PW, 1).fill(BORDER);
+    doc.fontSize(7).fillColor(GREY).font('Helvetica').text('OUTFITIFY.CO.UK  ·  MAKING STYLE EFFORTLESS', 0, PH - 15, { width: PW, align: 'center', characterSpacing: 1 });
+  }
+  function lcard(x, y, w, h, accent) {
+    doc.rect(x, y, w, h).fill(CARD);
+    doc.rect(x, y, 2, h).fill(accent || GREEN);
+  }
+  function textH(str, fontSize, fontName, width) {
+    doc.fontSize(fontSize).font(fontName || 'Helvetica');
+    return doc.heightOfString(str || '', { width, lineGap: 2 });
+  }
+
+  // ════════════════════════════════════════
+  // FREE TIER PDF — 2 pages
+  // ════════════════════════════════════════
+  if (tier === 'free') {
+    // PAGE 1 — Identity, palette, diagnosis
+    bg();
+    doc.rect(0, 40, PW, 200).fill('#0E0C0A');
+    doc.moveTo(0, 240).lineTo(PW, 240).strokeColor(BORDER).lineWidth(0.5).stroke();
+    pageHeader('Your Free Style Starter');
+
+    // Style identity
+    const nameParts = (content.styleIdentity?.name || 'YOUR STYLE').split(' ');
+    doc.fontSize(54).fillColor(WHITE).font('Helvetica-Bold').text((nameParts[0] || '').toUpperCase(), PAD, 60);
+    doc.fontSize(54).fillColor(GREEN).font('Helvetica-Bold').text((nameParts.slice(1).join(' ') || '').toUpperCase(), PAD, 118);
+    doc.fontSize(10).fillColor(GREY).font('Helvetica-Oblique').text(content.styleIdentity?.tagline || '', PAD, 194, { width: IW });
+
+    // Colour palette — 3 swatches, no labels
+    const paletteY = 256;
+    doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold').text('YOUR COLOUR PALETTE', PAD, paletteY, { characterSpacing: 3 });
+    doc.moveTo(PAD, paletteY + 12).lineTo(PAD + IW, paletteY + 12).strokeColor(BORDER).lineWidth(0.5).stroke();
+    const sw = 80, swGap = 16, swatchY = paletteY + 24;
+    (content.colourPalette?.colours || []).slice(0, 3).forEach((hex, i) => {
+      doc.rect(PAD + i * (sw + swGap), swatchY, sw, sw).fill(hex);
+    });
+
+    // Diagnosis
+    const diagY = swatchY + sw + 32;
+    doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold').text('YOUR DIAGNOSIS', PAD, diagY, { characterSpacing: 3 });
+    doc.moveTo(PAD, diagY + 12).lineTo(PAD + IW, diagY + 12).strokeColor(BORDER).lineWidth(0.5).stroke();
+    lcard(PAD, diagY + 20, IW, 52, GREEN);
+    doc.fontSize(12).fillColor(WHITE).font('Helvetica-Bold').text(content.diagnosis?.headline || '', PAD + 16, diagY + 32, { width: IW - 32, lineGap: 2 });
+    const bodyY = diagY + 88;
+    doc.fontSize(10).fillColor(MUTED).font('Helvetica').text(content.diagnosis?.body || '', PAD, bodyY, { width: IW, lineGap: 4 });
+
+    // Product suggestions
+    const prodY = bodyY + textH(content.diagnosis?.body || '', 10, 'Helvetica', IW) + 32;
+    doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold').text('STYLE SUGGESTIONS', PAD, prodY, { characterSpacing: 3 });
+    doc.moveTo(PAD, prodY + 12).lineTo(PAD + IW, prodY + 12).strokeColor(BORDER).lineWidth(0.5).stroke();
+    (content.recommendedPieces || []).slice(0, 2).forEach((piece, i) => {
+      const cy = prodY + 24 + i * 68;
+      doc.rect(PAD, cy, IW, 60).fill(CARD);
+      doc.rect(PAD, cy, 2, 60).fill(GREEN);
+      doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold').text((piece.category || '').toUpperCase(), PAD + 14, cy + 10, { characterSpacing: 1.5 });
+      doc.fontSize(10).fillColor(WHITE).font('Helvetica-Bold').text(piece.name || '', PAD + 14, cy + 24, { width: IW - 28 });
+      doc.fontSize(8.5).fillColor(GREY).font('Helvetica').text(piece.why || '', PAD + 14, cy + 40, { width: IW - 28 });
+    });
+
+    footer();
+
+    // PAGE 2 — Upgrade CTA
+    doc.addPage();
+    bg();
+    pageHeader('Unlock Your Full Blueprint');
+
+    // Hero
+    doc.rect(0, 40, PW, 120).fill('#0E0C0A');
+    doc.moveTo(0, 160).lineTo(PW, 160).strokeColor(BORDER).lineWidth(0.5).stroke();
+    doc.fontSize(32).fillColor(WHITE).font('Helvetica-Bold').text('WANT THE FULL', PAD, 60);
+    doc.fontSize(32).fillColor(GREEN).font('Helvetica-Bold').text('PICTURE?', PAD, 98);
+
+    // What's locked
+    const lockedItems = [
+      ['STYLE DNA', 'Your silhouette, fit language, fabrics and exactly what to avoid'],
+      ['WARDROBE BLUEPRINT', '5 priorities in order — what to buy first and why'],
+      ['5 PRODUCT PICKS', 'Hand-picked with brand, price and clickable links'],
+      ['WHERE TO INVEST', '4 brands suited to your goal and budget'],
+    ];
+    let lockY = 180;
+    lockedItems.forEach(([label, desc]) => {
+      doc.rect(PAD, lockY, IW, 52).fill(CARD2);
+      doc.rect(PAD, lockY, 2, 52).fill(BORDER);
+      doc.fontSize(7).fillColor(GREY).font('Helvetica-Bold').text('🔒  ' + label, PAD + 14, lockY + 10, { characterSpacing: 2 });
+      doc.fontSize(9).fillColor(GREY).font('Helvetica').text(desc, PAD + 14, lockY + 26, { width: IW - 28 });
+      lockY += 60;
+    });
+
+    // CTA block
+    const ctaY = lockY + 20;
+    doc.rect(PAD, ctaY, IW, 120).fill(GREEN);
+    doc.fontSize(18).fillColor(BG).font('Helvetica-Bold').text('UNLOCK YOUR FULL BLUEPRINT', PAD + 20, ctaY + 18, { width: IW - 40, align: 'center' });
+    doc.fontSize(12).fillColor(BG).font('Helvetica').text('Everything above. 6-page PDF. Built around your answers.', PAD + 20, ctaY + 50, { width: IW - 40, align: 'center' });
+    doc.fontSize(28).fillColor(BG).font('Helvetica-Bold').text('Standard £5.99  ·  Premium £9.99', PAD + 20, ctaY + 78, { width: IW - 40, align: 'center' });
+
+    doc.fontSize(10).fillColor(GREY).font('Helvetica').text('Visit outfitify.co.uk to unlock your report', PAD, ctaY + 136, { width: IW, align: 'center' });
+
+    footer();
+    doc.end();
+
+    return new Promise((resolve, reject) => {
+      stream.on('finish', () => resolve(pdfPath));
+      stream.on('error', reject);
+    });
+  }
+
+  // ════════════════════════════════════════
+  // PAID TIER PDF — shared helpers
+  // ════════════════════════════════════════
   function truncateToFit(str, maxWidth, fontSize, fontName, maxLines) {
     if (!str) return '';
     doc.fontSize(fontSize).font(fontName || 'Helvetica');
@@ -432,30 +630,9 @@ async function buildPDF(content, quizData, products) {
     }
     return best;
   }
-
-  function bg() { doc.rect(0, 0, PW, PH).fill(BG); }
-  function pageHeader(sub) {
-    doc.rect(0, 0, PW, 36).fill(HEADER);
-    doc.rect(0, 35, PW, 1).fill(BORDER);
-    doc.fontSize(8).fillColor(WHITE).font('Helvetica-Bold').text('OUTFITIFY', 0, 11, { width: PW, align: 'center', characterSpacing: 6 });
-    if (sub) doc.fontSize(6.5).fillColor(GREY).font('Helvetica').text(sub.toUpperCase(), 0, 22, { width: PW, align: 'center', characterSpacing: 2 });
-  }
-  function footer() {
-    doc.rect(0, PH - 28, PW, 28).fill(HEADER);
-    doc.rect(0, PH - 28, PW, 1).fill(BORDER);
-    doc.fontSize(7).fillColor(GREY).font('Helvetica').text('OUTFITIFY.CO.UK  ·  MAKING STYLE EFFORTLESS', 0, PH - 15, { width: PW, align: 'center', characterSpacing: 1 });
-  }
   function sectionLabel(text, y) {
     doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold').text(text, PAD, y, { characterSpacing: 3 });
     doc.moveTo(PAD, y + 12).lineTo(PAD + IW, y + 12).strokeColor(BORDER).lineWidth(0.5).stroke();
-  }
-  function lcard(x, y, w, h, accent) {
-    doc.rect(x, y, w, h).fill(CARD);
-    doc.rect(x, y, 2, h).fill(accent || GREEN);
-  }
-  function textH(str, fontSize, fontName, width) {
-    doc.fontSize(fontSize).font(fontName || 'Helvetica');
-    return doc.heightOfString(str || '', { width, lineGap: 2 });
   }
   function heroBlock(line1, line2, sub) {
     doc.rect(0, 40, PW, 90).fill('#0E0C0A');
@@ -592,33 +769,66 @@ async function buildPDF(content, quizData, products) {
   }
   footer();
 
-  // PAGE 6
-  doc.addPage(); bg(); pageHeader('Where To Invest');
-  heroBlock('WHERE TO', 'INVEST', 'Brands suited to your goal and budget');
-  const shopItems = (content.whereToInvest || []).slice(0, 4);
-  const shopColW = (IW - 12) / 2;
-  const shopHeights = shopItems.map(s => Math.max(textH(s.why || '', 9, 'Helvetica', shopColW - 28) + textH(`Best for: ${s.bestFor || ''}`, 8, 'Helvetica-Oblique', shopColW - 28) + 80, 100));
-  const row0H = Math.max(shopHeights[0] || 100, shopHeights[1] || 100);
-  const row1H = Math.max(shopHeights[2] || 100, shopHeights[3] || 100);
-  shopItems.forEach((shop, i) => {
-    const col = i % 2, row = Math.floor(i / 2);
-    const sx = PAD + col * (shopColW + 12), rowH = row === 0 ? row0H : row1H;
-    const cardY = 144 + (row === 0 ? 0 : row0H + 12);
-    doc.rect(sx, cardY, shopColW, rowH).fill(CARD);
-    doc.rect(sx, cardY, 2, rowH).fill(GREEN);
-    doc.fontSize(30).fillColor(GREEN).font('Helvetica-Bold').text(`0${i + 1}`, sx + 14, cardY + 14, { lineBreak: false });
-    doc.fontSize(13).fillColor(WHITE).font('Helvetica-Bold').text(shop.brand || '', sx + 14, cardY + 52, { width: shopColW - 28, lineBreak: false });
-    doc.fontSize(9).fillColor(MUTED).font('Helvetica').text(shop.why || '', sx + 14, cardY + 72, { width: shopColW - 28, lineGap: 2 });
-    const shopWhyH = textH(shop.why || '', 9, 'Helvetica', shopColW - 28);
-    doc.fontSize(8).fillColor(GREEN).font('Helvetica-Oblique').text(`Best for: ${shop.bestFor || ''}`, sx + 14, cardY + 74 + shopWhyH, { width: shopColW - 28, lineGap: 2 });
-  });
-  const ctaY = PH - 28 - 12 - 56;
-  doc.rect(PAD, ctaY, IW, 56).fill(CARD2);
-  doc.rect(PAD, ctaY, IW, 56).strokeColor(GREEN).lineWidth(0.5).stroke();
-  doc.rect(PAD, ctaY, 2, 56).fill(GREEN);
-  doc.fontSize(11).fillColor(WHITE).font('Helvetica-Bold').text('Know someone who needs this?', PAD + 16, ctaY + 12, { width: IW - 32 });
-  doc.fontSize(9).fillColor(MUTED).font('Helvetica').text('Share outfitify.co.uk — every report is built fresh, personalised to whoever takes the quiz.', PAD + 16, ctaY + 30, { width: IW - 32 });
-  footer();
+  // PAGE 6 — Premium only: Where To Invest. Standard gets upgrade CTA page instead.
+  if (tier === 'premium') {
+    doc.addPage(); bg(); pageHeader('Where To Invest');
+    heroBlock('WHERE TO', 'INVEST', 'Brands suited to your goal and budget');
+    const shopItems = (content.whereToInvest || []).slice(0, 4);
+    const shopColW = (IW - 12) / 2;
+    const shopHeights = shopItems.map(s => Math.max(textH(s.why || '', 9, 'Helvetica', shopColW - 28) + textH(`Best for: ${s.bestFor || ''}`, 8, 'Helvetica-Oblique', shopColW - 28) + 80, 100));
+    const row0H = Math.max(shopHeights[0] || 100, shopHeights[1] || 100);
+    const row1H = Math.max(shopHeights[2] || 100, shopHeights[3] || 100);
+    shopItems.forEach((shop, i) => {
+      const col = i % 2, row = Math.floor(i / 2);
+      const sx = PAD + col * (shopColW + 12), rowH = row === 0 ? row0H : row1H;
+      const cardY = 144 + (row === 0 ? 0 : row0H + 12);
+      doc.rect(sx, cardY, shopColW, rowH).fill(CARD);
+      doc.rect(sx, cardY, 2, rowH).fill(GREEN);
+      doc.fontSize(30).fillColor(GREEN).font('Helvetica-Bold').text(`0${i + 1}`, sx + 14, cardY + 14, { lineBreak: false });
+      doc.fontSize(13).fillColor(WHITE).font('Helvetica-Bold').text(shop.brand || '', sx + 14, cardY + 52, { width: shopColW - 28, lineBreak: false });
+      doc.fontSize(9).fillColor(MUTED).font('Helvetica').text(shop.why || '', sx + 14, cardY + 72, { width: shopColW - 28, lineGap: 2 });
+      const shopWhyH = textH(shop.why || '', 9, 'Helvetica', shopColW - 28);
+      doc.fontSize(8).fillColor(GREEN).font('Helvetica-Oblique').text(`Best for: ${shop.bestFor || ''}`, sx + 14, cardY + 74 + shopWhyH, { width: shopColW - 28, lineGap: 2 });
+    });
+    const ctaY = PH - 28 - 12 - 56;
+    doc.rect(PAD, ctaY, IW, 56).fill(CARD2);
+    doc.rect(PAD, ctaY, IW, 56).strokeColor(GREEN).lineWidth(0.5).stroke();
+    doc.rect(PAD, ctaY, 2, 56).fill(GREEN);
+    doc.fontSize(11).fillColor(WHITE).font('Helvetica-Bold').text('Know someone who needs this?', PAD + 16, ctaY + 12, { width: IW - 32 });
+    doc.fontSize(9).fillColor(MUTED).font('Helvetica').text('Share outfitify.co.uk — every report is built fresh, personalised to whoever takes the quiz.', PAD + 16, ctaY + 30, { width: IW - 32 });
+    footer();
+  } else {
+    // STANDARD — upgrade to premium CTA page
+    doc.addPage(); bg(); pageHeader('Unlock The Complete System');
+    doc.rect(0, 40, PW, 120).fill('#0E0C0A');
+    doc.moveTo(0, 160).lineTo(PW, 160).strokeColor(BORDER).lineWidth(0.5).stroke();
+    doc.fontSize(32).fillColor(WHITE).font('Helvetica-Bold').text('WANT MORE?', PAD, 60);
+    doc.fontSize(32).fillColor(GREEN).font('Helvetica-Bold').text('UPGRADE TO PREMIUM', PAD, 98);
+
+    const upgradeItems = [
+      ['9 PRODUCT PICKS', '4 more hand-picked products — full wardrobe coverage across every category'],
+      ['WHERE TO INVEST', '4 brands specifically suited to your goal, lifestyle and budget'],
+      ['NEVER BUY AGAIN', 'The exact items to cut from your wardrobe immediately and why'],
+      ['COST PER WEAR', 'How to think about spending at your specific budget level'],
+    ];
+    let uY = 180;
+    upgradeItems.forEach(([label, desc]) => {
+      doc.rect(PAD, uY, IW, 56).fill(CARD2);
+      doc.rect(PAD, uY, 2, 56).fill(GREEN);
+      doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold').text(label, PAD + 14, uY + 10, { characterSpacing: 2 });
+      doc.fontSize(9).fillColor(MUTED).font('Helvetica').text(desc, PAD + 14, uY + 26, { width: IW - 28 });
+      uY += 64;
+    });
+
+    // CTA
+    const uCtaY = uY + 20;
+    doc.rect(PAD, uCtaY, IW, 100).fill(GREEN);
+    doc.fontSize(20).fillColor(BG).font('Helvetica-Bold').text('UPGRADE TO PREMIUM', PAD + 20, uCtaY + 16, { width: IW - 40, align: 'center' });
+    doc.fontSize(13).fillColor(BG).font('Helvetica').text('Everything above included. Just £4 more.', PAD + 20, uCtaY + 46, { width: IW - 40, align: 'center' });
+    doc.fontSize(22).fillColor(BG).font('Helvetica-Bold').text('£9.99  ·  outfitify.co.uk', PAD + 20, uCtaY + 68, { width: IW - 40, align: 'center' });
+    footer();
+  }
+
   doc.end();
 
   return new Promise((resolve, reject) => {
@@ -627,25 +837,67 @@ async function buildPDF(content, quizData, products) {
   });
 }
 
-async function sendEmail(toEmail, downloadUrl, styleIdentityName) {
+async function sendEmail(toEmail, downloadUrl, styleIdentityName, tier = 'standard', sessionId = '') {
+
+  const upgradeUrl = `https://quiz.outfitify.co.uk?upgrade=true&sid=${sessionId}`;
+
+  // Tier-specific email content
+  const tierContent = {
+    free: {
+      subject: `Your ${styleIdentityName} Style Starter is Ready`,
+      headline: 'Your free style report is ready.',
+      body: `Your <span style="color:#C8BFB5">${styleIdentityName}</span> style starter has been built — your style identity, colour palette and diagnosis, all based on your answers.`,
+      downloadLabel: 'DOWNLOAD MY FREE REPORT →',
+      upsell: `
+        <div style="background:#111111;border:1px solid #2A2520;border-left:3px solid #B8A898;padding:24px;margin:0 0 24px">
+          <p style="color:#B8A898;font-size:10px;letter-spacing:3px;font-weight:600;margin:0 0 10px;text-transform:uppercase">Want the full picture?</p>
+          <p style="color:#C8BFB5;font-size:13px;line-height:1.7;margin:0 0 16px">Your free report shows you the problem. Your full blueprint shows you exactly how to fix it — with your complete Style DNA, wardrobe priorities, and hand-picked products with links and prices.</p>
+          <a href="${upgradeUrl}" style="display:block;background:#B8A898;color:#0A0A0A;text-align:center;padding:14px;font-size:11px;font-weight:600;letter-spacing:3px;text-decoration:none;text-transform:uppercase">UNLOCK YOUR FULL BLUEPRINT — £5.99 →</a>
+        </div>`,
+    },
+    standard: {
+      subject: `Your ${styleIdentityName} Style Blueprint is Ready`,
+      headline: 'Your blueprint is ready.',
+      body: `Your <span style="color:#C8BFB5">${styleIdentityName}</span> personal style blueprint has been generated — your diagnosis, Style DNA, wardrobe blueprint and 5 hand-picked products, all built specifically around you.`,
+      downloadLabel: 'DOWNLOAD MY STYLE BLUEPRINT →',
+      upsell: `
+        <div style="background:#111111;border:1px solid #2A2520;border-left:3px solid #B8A898;padding:24px;margin:0 0 24px">
+          <p style="color:#B8A898;font-size:10px;letter-spacing:3px;font-weight:600;margin:0 0 10px;text-transform:uppercase">Want the complete system?</p>
+          <p style="color:#C8BFB5;font-size:13px;line-height:1.7;margin:0 0 16px">Upgrade to Premium for 9 product recommendations, 4 brand picks tailored to your style, the never buy again list, and cost per wear insight — all for just £4 more.</p>
+          <a href="${upgradeUrl}&tier=premium" style="display:block;background:#B8A898;color:#0A0A0A;text-align:center;padding:14px;font-size:11px;font-weight:600;letter-spacing:3px;text-decoration:none;text-transform:uppercase">UPGRADE TO PREMIUM — £9.99 →</a>
+        </div>`,
+    },
+    premium: {
+      subject: `Your ${styleIdentityName} Complete Style System is Ready`,
+      headline: 'Your complete style system is ready.',
+      body: `Your <span style="color:#C8BFB5">${styleIdentityName}</span> premium style blueprint has been generated — the full system, 9 hand-picked products, brand guide, and everything you need to sort your wardrobe for good.`,
+      downloadLabel: 'DOWNLOAD MY COMPLETE BLUEPRINT →',
+      upsell: `
+        <div style="background:#111111;border:1px solid #2A2520;padding:20px 24px;margin:0 0 24px;text-align:center">
+          <p style="color:#7A6E66;font-size:12px;line-height:1.6;margin:0">Know someone who needs this? Share <span style="color:#B8A898">outfitify.co.uk</span> — every report is built fresh, personalised to whoever takes the quiz.</p>
+        </div>`,
+    },
+  };
+
+  const content = tierContent[tier] || tierContent.standard;
+
   const emailBody = {
     from: { address: 'outfitify@outfitify.co.uk', name: 'Outfitify' },
     to: [{ email_address: { address: toEmail } }],
-    subject: `Your ${styleIdentityName} Style Blueprint is Ready`,
+    subject: content.subject,
     htmlbody: `
       <div style="background:#0A0A0A;padding:0;font-family:Arial,sans-serif;max-width:600px;margin:0 auto;border:1px solid #2A2520">
         <div style="background:#111111;padding:28px 40px;border-bottom:1px solid #2A2520;text-align:center">
-          <p style="color:#7A6E66;font-size:10px;letter-spacing:4px;margin:0 0 4px">YOUR PERSONAL STYLE BLUEPRINT</p>
+          <p style="color:#7A6E66;font-size:10px;letter-spacing:4px;margin:0 0 4px;text-transform:uppercase">Your Personal Style Report</p>
           <h1 style="color:#F2EDE6;font-size:14px;letter-spacing:5px;margin:0;font-weight:600">OUTFITIFY</h1>
         </div>
         <div style="padding:44px 40px">
-          <h2 style="color:#F2EDE6;font-size:26px;font-weight:300;margin:0 0 12px;line-height:1.2">Your blueprint is ready.</h2>
-          <p style="color:#7A6E66;font-size:14px;line-height:1.7;margin:0 0 32px">
-            Your <span style="color:#C8BFB5">${styleIdentityName}</span> personal style blueprint has been generated — your diagnosis, style DNA, wardrobe formula, outfit examples and where to invest, all built specifically around you.
-          </p>
+          <h2 style="color:#F2EDE6;font-size:26px;font-weight:300;margin:0 0 12px;line-height:1.2">${content.headline}</h2>
+          <p style="color:#7A6E66;font-size:14px;line-height:1.7;margin:0 0 32px">${content.body}</p>
           <a href="${downloadUrl}" style="display:block;background:#F2EDE6;color:#0A0A0A;text-align:center;padding:16px;font-size:11px;font-weight:600;letter-spacing:3px;text-decoration:none;margin:0 0 32px;text-transform:uppercase">
-            DOWNLOAD MY STYLE BLUEPRINT →
+            ${content.downloadLabel}
           </a>
+          ${content.upsell}
           <p style="color:#4A4440;font-size:12px;text-align:center;border-top:1px solid #2A2520;padding-top:20px;margin:0">
             This link is unique to you. If you have any issues, reply to this email.
           </p>
@@ -660,7 +912,7 @@ async function sendEmail(toEmail, downloadUrl, styleIdentityName) {
   const response = await axios.post('https://api.zeptomail.eu/v1.1/email', emailBody, {
     headers: { 'Accept': 'application/json', 'Content-Type': 'application/json', 'Authorization': process.env.ZEPTO_SMTP_PASS }
   });
-  console.log('Email sent:', response.data);
+  console.log(`${tier} email sent to ${toEmail}:`, response.data);
 }
 
 const PORT = process.env.PORT || 3000;
