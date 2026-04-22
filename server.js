@@ -276,6 +276,15 @@ app.get('/api/upgrade-to-premium/:sessionId', async (req, res) => {
 async function generateAndStoreReport(sessionId, quizData, userEmail, tier = 'standard') {
   activeJobs++;
   console.log(`Generating ${tier} report for session ${sessionId}... (active jobs: ${activeJobs})`);
+
+  // Clear any existing download record so the success page doesn't serve a stale PDF
+  // while the new one is being generated (important for upgrades)
+  const existingPath = downloadsPath(sessionId);
+  if (fs.existsSync(existingPath)) {
+    fs.unlinkSync(existingPath);
+    console.log(`Cleared existing download record for session ${sessionId} (upgrade flow)`);
+  }
+
   try {
     const products = await fetchProducts(quizData.budget, quizData.goal);
     const reportContent = await generateReportContent(quizData, products, tier);
@@ -939,7 +948,7 @@ async function sendEmail(toEmail, downloadUrl, styleIdentityName, tier = 'standa
         <div style="background:#111111;border:1px solid #2A2520;border-left:3px solid #B8A898;padding:24px;margin:0 0 24px">
           <p style="color:#B8A898;font-size:10px;letter-spacing:3px;font-weight:600;margin:0 0 10px;text-transform:uppercase">Want the complete system?</p>
           <p style="color:#C8BFB5;font-size:13px;line-height:1.7;margin:0 0 16px">Upgrade to Premium for 9 product recommendations, 4 brand picks tailored to your style, the never buy again list, and cost per wear insight — all for just £4 more.</p>
-          <a href="${process.env.BASE_URL}/api/upgrade-to-premium/${sessionId}" style="display:block;background:#B8A898;color:#0A0A0A;text-align:center;padding:14px;font-size:11px;font-weight:600;letter-spacing:3px;text-decoration:none;text-transform:uppercase">UPGRADE TO PREMIUM — £9.99 →</a>
+          <a href="${process.env.BASE_URL || 'https://outfitify-backend-production.up.railway.app'}/api/upgrade-to-premium/${sessionId}" style="display:block;background:#B8A898;color:#0A0A0A;text-align:center;padding:14px;font-size:11px;font-weight:600;letter-spacing:3px;text-decoration:none;text-transform:uppercase">UPGRADE TO PREMIUM — £9.99 →</a>
         </div>`,
     },
     premium: {
