@@ -132,6 +132,7 @@ app.post('/api/create-checkout', async (req, res) => {
   try {
     const checkoutSession = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
+      customer_creation: 'always',
       line_items: [{
         price_data: {
           currency: 'gbp',
@@ -177,8 +178,15 @@ app.post('/webhook', async (req, res) => {
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
     const sessionId = session.metadata.sessionId;
-    const userEmail = session.customer_email;
+    // Try multiple sources for the email
+    const userEmail = session.customer_email
+      || session.customer_details?.email
+      || session.metadata.email
+      || null;
     console.log(`Webhook received for session ${sessionId}, email: ${userEmail}`);
+    if (!userEmail) {
+      console.error(`No email found for session ${sessionId} — cannot send report`);
+    }
     const quizData = {
       budget:    session.metadata.budget,
       struggles: session.metadata.struggles,
@@ -469,20 +477,31 @@ Rules:
 - whereToInvest: exactly 4 brands, UK-accessible only
 - JSON only, no markdown, no preamble`;
 
-  const message = await anthropic.messages.create({
-    model: 'claude-sonnet-4-20250514',
-    max_tokens: 4000,
-    messages: [{ role: 'user', content: prompt }]
-  });
+  // Retry up to 3 times if Claude returns malformed JSON
+  let parsed = null;
+  let lastError = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const message = await anthropic.messages.create({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 4000,
+        messages: [{ role: 'user', content: prompt }]
+      });
+      const raw = message.content[0].text.trim();
+      const text = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+      parsed = JSON.parse(text);
+      console.log(`=== CLAUDE OUTPUT (attempt ${attempt}) ===`);
+      console.log(JSON.stringify(parsed, null, 2));
+      console.log('=== END OUTPUT ===');
+      break; // success — exit retry loop
+    } catch (err) {
+      lastError = err;
+      console.error(`Claude JSON parse failed on attempt ${attempt}:`, err.message);
+      if (attempt < 3) console.log('Retrying...');
+    }
+  }
 
-  const raw = message.content[0].text.trim();
-  const text = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
-  const parsed = JSON.parse(text);
-
-  console.log('=== CLAUDE OUTPUT ===');
-  console.log(JSON.stringify(parsed, null, 2));
-  console.log('=== END OUTPUT ===');
-
+  if (!parsed) throw new Error(`Claude failed to return valid JSON after 3 attempts: ${lastError?.message}`);
   return parsed;
 }
 
