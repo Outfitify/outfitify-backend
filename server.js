@@ -119,6 +119,7 @@ app.post('/api/free-report', async (req, res) => {
 app.post('/api/create-checkout', async (req, res) => {
   const { sessionId, tier } = req.body;
   const resolvedTier = tier || 'standard';
+  console.log(`Creating ${resolvedTier} checkout for session ${sessionId}`);
   // Check in-memory first, then free session disk store (upgrade flow)
   const quizData = sessions.get(sessionId) || getFreeSession(sessionId);
   if (!quizData) return res.status(400).json({ error: 'Session not found or expired' });
@@ -484,7 +485,7 @@ Rules:
     try {
       const message = await anthropic.messages.create({
         model: 'claude-sonnet-4-20250514',
-        max_tokens: 4000,
+        max_tokens: 6000,
         messages: [{ role: 'user', content: prompt }]
       });
       const raw = message.content[0].text.trim();
@@ -858,7 +859,7 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
 
 async function sendEmail(toEmail, downloadUrl, styleIdentityName, tier = 'standard', sessionId = '') {
 
-  const upgradeUrl = `https://quiz.outfitify.co.uk?upgrade=true&sid=${sessionId}`;
+  const upgradeUrl = `https://unlock.outfitify.co.uk?sid=${sessionId}`;
 
   // Tier-specific email content
   const tierContent = {
