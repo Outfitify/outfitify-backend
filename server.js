@@ -673,7 +673,7 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
     lockedItems.forEach(([label, desc]) => {
       doc.rect(PAD, lockY, IW, 52).fill(CARD2);
       doc.rect(PAD, lockY, 2, 52).fill(BORDER);
-      doc.fontSize(7).fillColor(GREY).font('Helvetica-Bold').text('🔒  ' + label, PAD + 14, lockY + 10, { characterSpacing: 2 });
+      doc.fontSize(7).fillColor(GREY).font('Helvetica-Bold').text('[ LOCKED ]  ' + label, PAD + 14, lockY + 10, { characterSpacing: 2 });
       doc.fontSize(9).fillColor(GREY).font('Helvetica').text(desc, PAD + 14, lockY + 26, { width: IW - 28 });
       lockY += 60;
     });
