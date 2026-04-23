@@ -99,16 +99,72 @@ app.post('/api/save-session', (req, res) => {
 });
 
 // ════════════════════════════════════════
+// MAILCHIMP — Add contact to free tier audience
+// ════════════════════════════════════════
+async function addToMailchimp(email, quizData, tier = 'free') {
+  const apiKey = process.env.MAILCHIMP_API_KEY;
+  const audienceId = process.env.MAILCHIMP_AUDIENCE_ID;
+  const server = process.env.MAILCHIMP_SERVER || 'us18';
+
+  if (!apiKey || !audienceId) {
+    console.log('Mailchimp not configured — skipping');
+    return;
+  }
+
+  const tag = tier === 'premium' ? 'premium-customer' : tier === 'standard' ? 'standard-customer' : 'free-tier';
+
+  try {
+    const response = await axios.post(
+      `https://${server}.api.mailchimp.com/3.0/lists/${audienceId}/members`,
+      {
+        email_address: email,
+        status: 'subscribed',
+        merge_fields: {
+          BUDGET:    quizData.budget    || '',
+          LIFESTYLE: quizData.lifestyle || '',
+          GOAL:      quizData.goal      || '',
+          FIT:       quizData.fit       || '',
+        },
+        tags: [tag],
+      },
+      {
+        auth: { username: 'anystring', password: apiKey },
+        headers: { 'Content-Type': 'application/json' },
+        validateStatus: (status) => status < 500,
+      }
+    );
+
+    if (response.status === 200 || response.status === 204) {
+      console.log(`Mailchimp: added ${email} with tag [${tag}]`);
+    } else if (response.data?.title === 'Member Exists') {
+      console.log(`Mailchimp: ${email} already subscribed — updating tag to [${tag}]`);
+      const emailHash = crypto.createHash('md5').update(email.toLowerCase()).digest('hex');
+      await axios.post(
+        `https://${server}.api.mailchimp.com/3.0/lists/${audienceId}/members/${emailHash}/tags`,
+        { tags: [{ name: tag, status: 'active' }] },
+        { auth: { username: 'anystring', password: apiKey } }
+      );
+    } else {
+      console.error(`Mailchimp error: ${response.status}`, response.data?.detail || response.data?.title);
+    }
+  } catch (err) {
+    console.error('Mailchimp request failed:', err.message);
+  }
+}
+
+// ════════════════════════════════════════
 // FREE REPORT — Generate and email basic report, persist session for upgrade
 // ════════════════════════════════════════
 app.post('/api/free-report', async (req, res) => {
   const { budget, struggles, lifestyle, goal, fit, email } = req.body;
   if (!budget || !email) return res.status(400).json({ error: 'Missing required fields' });
   const sessionId = crypto.randomBytes(16).toString('hex');
-  saveFreeSession(sessionId, { budget, struggles, lifestyle, goal, fit, email, createdAt: Date.now() });
+  const quizData = { budget, struggles, lifestyle, goal, fit };
+  saveFreeSession(sessionId, { ...quizData, email, createdAt: Date.now() });
   res.json({ success: true, sessionId });
-  // Generate async — don't block response
-  generateAndStoreReport(sessionId, { budget, struggles, lifestyle, goal, fit }, email, 'free').catch(err => {
+  // Add to Mailchimp and generate report async — don't block response
+  addToMailchimp(email, quizData).catch(err => console.error('Mailchimp failed:', err));
+  generateAndStoreReport(sessionId, quizData, email, 'free').catch(err => {
     console.error(`Free report generation failed for ${sessionId}:`, err);
   });
 });
@@ -293,6 +349,10 @@ async function generateAndStoreReport(sessionId, quizData, userEmail, tier = 'st
     saveDownload(sessionId, { token, pdfPath, email: userEmail, quizData, tier, createdAt: Date.now() });
     const downloadUrl = `${process.env.BASE_URL}/api/download/${token}`;
     await sendEmail(userEmail, downloadUrl, reportContent.styleIdentity.name, tier, sessionId);
+    // Tag paid customers in Mailchimp so we can segment free vs paid
+    if (userEmail && (tier === 'standard' || tier === 'premium')) {
+      addToMailchimp(userEmail, quizData, tier).catch(err => console.error('Mailchimp paid tag failed:', err));
+    }
     console.log(`${tier} report ready for session ${sessionId}`);
   } catch (err) {
     console.error(`Report generation failed for ${sessionId}:`, err);
