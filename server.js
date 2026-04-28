@@ -65,9 +65,6 @@ function findDownloadByToken(token) {
   return null;
 }
 
-// ════════════════════════════════════════
-// FREE SESSION PERSISTENCE — 7-day disk storage for upgrade flow
-// ════════════════════════════════════════
 const FREE_SESSIONS_DIR = path.join(os.tmpdir(), 'outfitify-free-sessions');
 if (!fs.existsSync(FREE_SESSIONS_DIR)) fs.mkdirSync(FREE_SESSIONS_DIR, { recursive: true });
 
@@ -84,9 +81,6 @@ function getFreeSession(sessionId) {
   } catch { return null; }
 }
 
-// ════════════════════════════════════════
-// STEP 1 — Save quiz answers
-// ════════════════════════════════════════
 app.post('/api/save-session', (req, res) => {
   const { budget, struggles, lifestyle, goal, fit } = req.body;
   if (!budget) return res.status(400).json({ error: 'Missing required fields' });
@@ -98,18 +92,12 @@ app.post('/api/save-session', (req, res) => {
   res.json({ sessionId });
 });
 
-// ════════════════════════════════════════
-// MAILCHIMP — Add contact to free tier audience
-// ════════════════════════════════════════
 async function addToMailchimp(email, quizData, tier = 'free') {
   const apiKey = process.env.MAILCHIMP_API_KEY;
   const audienceId = process.env.MAILCHIMP_AUDIENCE_ID;
   const server = process.env.MAILCHIMP_SERVER || 'us18';
 
-  if (!apiKey || !audienceId) {
-    console.log('Mailchimp not configured — skipping');
-    return;
-  }
+  if (!apiKey || !audienceId) { console.log('Mailchimp not configured — skipping'); return; }
 
   const tag = tier === 'premium' ? 'premium-customer' : tier === 'standard' ? 'standard-customer' : 'free-tier';
 
@@ -119,21 +107,11 @@ async function addToMailchimp(email, quizData, tier = 'free') {
       {
         email_address: email,
         status: 'subscribed',
-        merge_fields: {
-          BUDGET:    quizData.budget    || '',
-          LIFESTYLE: quizData.lifestyle || '',
-          GOAL:      quizData.goal      || '',
-          FIT:       quizData.fit       || '',
-        },
+        merge_fields: { BUDGET: quizData.budget || '', LIFESTYLE: quizData.lifestyle || '', GOAL: quizData.goal || '', FIT: quizData.fit || '' },
         tags: [tag],
       },
-      {
-        auth: { username: 'anystring', password: apiKey },
-        headers: { 'Content-Type': 'application/json' },
-        validateStatus: (status) => status < 500,
-      }
+      { auth: { username: 'anystring', password: apiKey }, headers: { 'Content-Type': 'application/json' }, validateStatus: (s) => s < 500 }
     );
-
     if (response.status === 200 || response.status === 204) {
       console.log(`Mailchimp: added ${email} with tag [${tag}]`);
     } else if (response.data?.title === 'Member Exists') {
@@ -147,14 +125,9 @@ async function addToMailchimp(email, quizData, tier = 'free') {
     } else {
       console.error(`Mailchimp error: ${response.status}`, response.data?.detail || response.data?.title);
     }
-  } catch (err) {
-    console.error('Mailchimp request failed:', err.message);
-  }
+  } catch (err) { console.error('Mailchimp request failed:', err.message); }
 }
 
-// ════════════════════════════════════════
-// FREE REPORT — Generate and email basic report, persist session for upgrade
-// ════════════════════════════════════════
 app.post('/api/free-report', async (req, res) => {
   const { budget, struggles, lifestyle, goal, fit, email } = req.body;
   if (!budget || !email) return res.status(400).json({ error: 'Missing required fields' });
@@ -162,26 +135,21 @@ app.post('/api/free-report', async (req, res) => {
   const quizData = { budget, struggles, lifestyle, goal, fit };
   saveFreeSession(sessionId, { ...quizData, email, createdAt: Date.now() });
   res.json({ success: true, sessionId });
-  // Add to Mailchimp and generate report async — don't block response
   addToMailchimp(email, quizData).catch(err => console.error('Mailchimp failed:', err));
   generateAndStoreReport(sessionId, quizData, email, 'free').catch(err => {
     console.error(`Free report generation failed for ${sessionId}:`, err);
   });
 });
 
-// ════════════════════════════════════════
-// STEP 2 — Create Stripe Checkout Session (tiered)
-// ════════════════════════════════════════
 app.post('/api/create-checkout', async (req, res) => {
   const { sessionId, tier } = req.body;
   const resolvedTier = tier || 'standard';
   console.log(`Creating ${resolvedTier} checkout for session ${sessionId}`);
-  // Check in-memory first, then free session disk store (upgrade flow)
   const quizData = sessions.get(sessionId) || getFreeSession(sessionId);
   if (!quizData) return res.status(400).json({ error: 'Session not found or expired' });
 
   const tierConfig = {
-    standard: { amount: 599, name: 'Outfitify Personal Style Blueprint — Standard' },
+    standard: { amount: 499, name: 'Outfitify Personal Style Blueprint — Standard' },
     premium:  { amount: 999, name: 'Outfitify Personal Style Blueprint — Premium' },
   };
   const config = tierConfig[resolvedTier] || tierConfig.standard;
@@ -190,6 +158,7 @@ app.post('/api/create-checkout', async (req, res) => {
     const checkoutSession = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       customer_creation: 'always',
+      allow_promotion_codes: true,
       line_items: [{
         price_data: {
           currency: 'gbp',
@@ -206,13 +175,9 @@ app.post('/api/create-checkout', async (req, res) => {
       success_url: `${process.env.SUCCESS_URL || "https://success.outfitify.co.uk"}?token={CHECKOUT_SESSION_ID}&sid=${sessionId}`,
       cancel_url: `${process.env.UNLOCK_PAGE_URL || "https://quiz.outfitify.co.uk"}?cancelled=true`,
       metadata: {
-        sessionId,
-        tier: resolvedTier,
-        budget:    quizData.budget    || '',
-        struggles: quizData.struggles || '',
-        lifestyle: quizData.lifestyle || '',
-        goal:      quizData.goal      || '',
-        fit:       quizData.fit       || '',
+        sessionId, tier: resolvedTier,
+        budget: quizData.budget || '', struggles: quizData.struggles || '',
+        lifestyle: quizData.lifestyle || '', goal: quizData.goal || '', fit: quizData.fit || '',
       },
     });
     res.json({ url: checkoutSession.url });
@@ -222,7 +187,6 @@ app.post('/api/create-checkout', async (req, res) => {
   }
 });
 
-// STEP 3 — Stripe Webhook
 app.post('/webhook', async (req, res) => {
   const sig = req.headers['stripe-signature'];
   let event;
@@ -235,21 +199,12 @@ app.post('/webhook', async (req, res) => {
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
     const sessionId = session.metadata.sessionId;
-    // Try multiple sources for the email
-    const userEmail = session.customer_email
-      || session.customer_details?.email
-      || session.metadata.email
-      || null;
+    const userEmail = session.customer_email || session.customer_details?.email || session.metadata.email || null;
     console.log(`Webhook received for session ${sessionId}, email: ${userEmail}`);
-    if (!userEmail) {
-      console.error(`No email found for session ${sessionId} — cannot send report`);
-    }
+    if (!userEmail) console.error(`No email found for session ${sessionId} — cannot send report`);
     const quizData = {
-      budget:    session.metadata.budget,
-      struggles: session.metadata.struggles,
-      lifestyle: session.metadata.lifestyle,
-      goal:      session.metadata.goal,
-      fit:       session.metadata.fit,
+      budget: session.metadata.budget, struggles: session.metadata.struggles,
+      lifestyle: session.metadata.lifestyle, goal: session.metadata.goal, fit: session.metadata.fit,
     };
     const tier = session.metadata.tier || 'standard';
     generateAndStoreReport(sessionId, quizData, userEmail, tier).catch(err => {
@@ -259,14 +214,12 @@ app.post('/webhook', async (req, res) => {
   res.json({ received: true });
 });
 
-// STEP 4 — Poll for PDF readiness
 app.get('/api/report-status/:sessionId', (req, res) => {
   const dl = getDownload(req.params.sessionId);
   if (dl) res.json({ ready: true, downloadToken: dl.token });
   else res.json({ ready: false });
 });
 
-// STEP 5 — Serve PDF download
 app.get('/api/download/:token', (req, res) => {
   const data = findDownloadByToken(req.params.token);
   if (data) {
@@ -278,25 +231,20 @@ app.get('/api/download/:token', (req, res) => {
   res.status(404).json({ error: 'Download link not found or expired' });
 });
 
-// UPGRADE DIRECT — GET endpoint that creates a Premium Stripe checkout and redirects immediately
-// Used in email CTAs so the user goes straight to Stripe Premium, no unlock page confusion.
 app.get('/api/upgrade-to-premium/:sessionId', async (req, res) => {
   const { sessionId } = req.params;
-
-  // Download record is most reliable — persisted to disk with quizData, no expiry
   const dl = getDownload(sessionId);
   const quizData = dl?.quizData || sessions.get(sessionId) || getFreeSession(sessionId);
-
   if (!quizData) {
     console.log(`Upgrade attempt for expired session ${sessionId}`);
     return res.redirect('https://quiz.outfitify.co.uk?msg=session_expired');
   }
-
   try {
     console.log(`Creating direct premium upgrade checkout for session ${sessionId}`);
     const checkoutSession = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       customer_creation: 'always',
+      allow_promotion_codes: true,
       line_items: [{
         price_data: {
           currency: 'gbp',
@@ -313,13 +261,9 @@ app.get('/api/upgrade-to-premium/:sessionId', async (req, res) => {
       success_url: `${process.env.SUCCESS_URL || 'https://success.outfitify.co.uk'}?token={CHECKOUT_SESSION_ID}&sid=${sessionId}`,
       cancel_url: `https://unlock.outfitify.co.uk?sid=${sessionId}&cancelled=true`,
       metadata: {
-        sessionId,
-        tier: 'premium',
-        budget:    quizData.budget    || '',
-        struggles: quizData.struggles || '',
-        lifestyle: quizData.lifestyle || '',
-        goal:      quizData.goal      || '',
-        fit:       quizData.fit       || '',
+        sessionId, tier: 'premium',
+        budget: quizData.budget || '', struggles: quizData.struggles || '',
+        lifestyle: quizData.lifestyle || '', goal: quizData.goal || '', fit: quizData.fit || '',
       },
     });
     res.redirect(checkoutSession.url);
@@ -332,15 +276,11 @@ app.get('/api/upgrade-to-premium/:sessionId', async (req, res) => {
 async function generateAndStoreReport(sessionId, quizData, userEmail, tier = 'standard') {
   activeJobs++;
   console.log(`Generating ${tier} report for session ${sessionId}... (active jobs: ${activeJobs})`);
-
-  // Clear any existing download record so the success page doesn't serve a stale PDF
-  // while the new one is being generated (important for upgrades)
   const existingPath = downloadsPath(sessionId);
   if (fs.existsSync(existingPath)) {
     fs.unlinkSync(existingPath);
     console.log(`Cleared existing download record for session ${sessionId} (upgrade flow)`);
   }
-
   try {
     const products = await fetchProducts(quizData.budget, quizData.goal);
     const reportContent = await generateReportContent(quizData, products, tier);
@@ -349,7 +289,6 @@ async function generateAndStoreReport(sessionId, quizData, userEmail, tier = 'st
     saveDownload(sessionId, { token, pdfPath, email: userEmail, quizData, tier, createdAt: Date.now() });
     const downloadUrl = `${process.env.BASE_URL}/api/download/${token}`;
     await sendEmail(userEmail, downloadUrl, reportContent.styleIdentity.name, tier, sessionId);
-    // Tag paid customers in Mailchimp so we can segment free vs paid
     if (userEmail && (tier === 'standard' || tier === 'premium')) {
       addToMailchimp(userEmail, quizData, tier).catch(err => console.error('Mailchimp paid tag failed:', err));
     }
@@ -386,7 +325,6 @@ async function fetchProducts(budget, goal) {
 
   function getStyleTags(goal) {
     const g = (goal || '').toLowerCase();
-    // Smart casual must be checked FIRST — before streetwear/relaxed patterns
     if (/smart\s*casual|business\s*casual|work|office|professional|corporate|hybrid/.test(g)) {
       return { primary: ['Smart Casual/Workwear'], fallback: ['Everyday Fits', 'Date Night/Going Out'] };
     }
@@ -436,8 +374,7 @@ async function fetchProducts(budget, goal) {
     let pool = inBudget.filter(p => p['Category'] === cat && matchesStyle(p, primary));
     if (pool.length < 4) {
       const fallbackItems = inBudget.filter(p =>
-        p['Category'] === cat && matchesStyle(p, fallback) &&
-        !pool.find(q => q['Item Name'] === p['Item Name'])
+        p['Category'] === cat && matchesStyle(p, fallback) && !pool.find(q => q['Item Name'] === p['Item Name'])
       );
       pool = [...pool, ...fallbackItems];
     }
@@ -466,10 +403,7 @@ async function generateReportContent(quizData, products, tier = 'standard') {
   const productSummary = {};
   for (const [cat, items] of Object.entries(products)) {
     productSummary[cat] = items.slice(0, 4).map(p => ({
-      name: p['Item Name'],
-      brand: p['Brand'],
-      price: `£${p['Price']}`,
-      url: p['Product URL'],
+      name: p['Item Name'], brand: p['Brand'], price: `£${p['Price']}`, url: p['Product URL'],
       ...(p._overBudget ? { note: 'slightly over budget — only option available in this category' } : {})
     }));
   }
@@ -479,7 +413,6 @@ async function generateReportContent(quizData, products, tier = 'standard') {
     items.forEach(p => allAvailableProducts.push({ ...p, category: cat }));
   }
 
-  // Tier-specific prompt instructions
   const tierInstructions = {
     free: `
 REPORT TIER: FREE
@@ -491,14 +424,12 @@ Generate a basic style starter report. Keep it simple and surface-level — enou
 - wardrobeBlueprint: leave headline and ALL priorities as empty/null — not included in free tier. Leave neverBuyAgain and costPerWear as empty strings
 - recommendedPieces: exactly 2 items. NO url (set to ""), NO brand (set to ""), NO price (set to ""). Name should be a generic description only e.g. "A fitted white crew neck t-shirt in breathable cotton" — do NOT use actual product names from the list
 - whereToInvest: empty array []`,
-
     standard: `
 REPORT TIER: STANDARD
 Generate the full report EXCEPT whereToInvest. Include everything else at full detail.
 - recommendedPieces: exactly 5 items with full brand, price and URL from the product list
 - whereToInvest: empty array [] — not included in standard tier
 - All other sections: full detail as normal`,
-
     premium: `
 REPORT TIER: PREMIUM
 Generate the complete full report with everything included at maximum detail.
@@ -543,30 +474,12 @@ TONE RULES:
 
 Generate a style report with exactly this JSON structure (JSON only, no markdown, no preamble):
 {
-  "styleIdentity": {
-    "name": "2-3 word style identity derived from their goal and lifestyle",
-    "tagline": "One punchy sentence specific to their goal",
-    "intro": "3 sentences. Acknowledge their struggles, name what held them back, tell them what changes."
-  },
-  "colourPalette": {
-    "colours": ["#hex1", "#hex2", "#hex3", "#hex4", "#hex5"],
-    "labels": ["name1", "name2", "name3", "name4", "name5"],
-    "rationale": "2 sentences. Why these colours, how to use them together."
-  },
-  "diagnosis": {
-    "headline": "One direct punchy headline — make it feel like a revelation",
-    "body": "4-5 sentences addressing their specific struggles. Root cause not symptom.",
-    "theTruth": "One bold statement that reframes their style problem."
-  },
-  "styleDNA": {
-    "silhouette": "Specific silhouette advice based on their fit answer",
-    "fitLanguage": "Exact fit vocabulary to use when shopping",
-    "fabrics": "Fabrics for their specific lifestyle",
-    "colourUsage": "How to use the palette day to day — ratios and combinations",
-    "avoid": "What to stop wearing immediately and exactly why"
-  },
+  "styleIdentity": { "name": "2-3 word style identity", "tagline": "One punchy sentence", "intro": "3 sentences." },
+  "colourPalette": { "colours": ["#hex1","#hex2","#hex3","#hex4","#hex5"], "labels": ["name1","name2","name3","name4","name5"], "rationale": "2 sentences." },
+  "diagnosis": { "headline": "One direct punchy headline", "body": "4-5 sentences.", "theTruth": "One bold statement." },
+  "styleDNA": { "silhouette": "...", "fitLanguage": "...", "fabrics": "...", "colourUsage": "...", "avoid": "..." },
   "wardrobeBlueprint": {
-    "headline": "One sentence framing their wardrobe strategy",
+    "headline": "One sentence",
     "priorities": [
       { "order": 1, "item": "item", "why": "why", "howToShop": "guidance" },
       { "order": 2, "item": "item", "why": "why", "howToShop": "guidance" },
@@ -574,35 +487,23 @@ Generate a style report with exactly this JSON structure (JSON only, no markdown
       { "order": 4, "item": "item", "why": "why", "howToShop": "guidance" },
       { "order": 5, "item": "item", "why": "why", "howToShop": "guidance" }
     ],
-    "neverBuyAgain": "2-3 specific things to stop buying and exactly why",
-    "costPerWear": "One insight about spending for their exact budget level"
+    "neverBuyAgain": "2-3 specific things",
+    "costPerWear": "One insight"
   },
   "recommendedPieces": [
-    {
-      "category": "Top/Bottoms/Shoes/Hoodie/Jacket",
-      "name": "exact product name from available products list",
-      "brand": "brand name",
-      "price": "£XX",
-      "url": "exact product url from available products list",
-      "why": "One sentence — specific fit, fabric or detail that makes it right for them"
-    }
+    { "category": "Top/Bottoms/Shoes/Hoodie/Jacket", "name": "exact product name", "brand": "brand", "price": "£XX", "url": "exact url", "why": "One sentence" }
   ],
   "whereToInvest": [
-    {
-      "brand": "Brand name",
-      "why": "One specific sentence on why this brand suits their goal and budget",
-      "bestFor": "Specific product type this brand does best for their style direction"
-    }
+    { "brand": "Brand", "why": "One sentence", "bestFor": "Specific product type" }
   ]
 }
 
 Rules:
 - wardrobeBlueprint.priorities must contain exactly 5 items
-- recommendedPieces: 6-9 pieces, targeting 3 tops, 2 bottoms, 2 shoes, 2 layers. Quality over quantity.
+- recommendedPieces: 6-9 pieces for paid tiers. Quality over quantity.
 - whereToInvest: exactly 4 brands, UK-accessible only
 - JSON only, no markdown, no preamble`;
 
-  // Retry up to 3 times if Claude returns malformed JSON
   let parsed = null;
   let lastError = null;
   for (let attempt = 1; attempt <= 3; attempt++) {
@@ -618,7 +519,7 @@ Rules:
       console.log(`=== CLAUDE OUTPUT (attempt ${attempt}) ===`);
       console.log(JSON.stringify(parsed, null, 2));
       console.log('=== END OUTPUT ===');
-      break; // success — exit retry loop
+      break;
     } catch (err) {
       lastError = err;
       console.error(`Claude JSON parse failed on attempt ${attempt}:`, err.message);
@@ -662,23 +563,15 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
     return doc.heightOfString(str || '', { width, lineGap: 2 });
   }
 
-  // ════════════════════════════════════════
-  // FREE TIER PDF — 2 pages
-  // ════════════════════════════════════════
   if (tier === 'free') {
-    // PAGE 1 — Identity, palette, diagnosis
     bg();
     doc.rect(0, 40, PW, 200).fill('#0E0C0A');
     doc.moveTo(0, 240).lineTo(PW, 240).strokeColor(BORDER).lineWidth(0.5).stroke();
     pageHeader('Your Free Style Starter');
-
-    // Style identity
     const nameParts = (content.styleIdentity?.name || 'YOUR STYLE').split(' ');
     doc.fontSize(54).fillColor(WHITE).font('Helvetica-Bold').text((nameParts[0] || '').toUpperCase(), PAD, 60);
     doc.fontSize(54).fillColor(GREEN).font('Helvetica-Bold').text((nameParts.slice(1).join(' ') || '').toUpperCase(), PAD, 118);
     doc.fontSize(10).fillColor(GREY).font('Helvetica-Oblique').text(content.styleIdentity?.tagline || '', PAD, 194, { width: IW });
-
-    // Colour palette — 3 swatches, no labels
     const paletteY = 256;
     doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold').text('YOUR COLOUR PALETTE', PAD, paletteY, { characterSpacing: 3 });
     doc.moveTo(PAD, paletteY + 12).lineTo(PAD + IW, paletteY + 12).strokeColor(BORDER).lineWidth(0.5).stroke();
@@ -686,8 +579,6 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
     (content.colourPalette?.colours || []).slice(0, 3).forEach((hex, i) => {
       doc.rect(PAD + i * (sw + swGap), swatchY, sw, sw).fill(hex);
     });
-
-    // Diagnosis
     const diagY = swatchY + sw + 32;
     doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold').text('YOUR DIAGNOSIS', PAD, diagY, { characterSpacing: 3 });
     doc.moveTo(PAD, diagY + 12).lineTo(PAD + IW, diagY + 12).strokeColor(BORDER).lineWidth(0.5).stroke();
@@ -695,8 +586,6 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
     doc.fontSize(12).fillColor(WHITE).font('Helvetica-Bold').text(content.diagnosis?.headline || '', PAD + 16, diagY + 32, { width: IW - 32, lineGap: 2 });
     const bodyY = diagY + 88;
     doc.fontSize(10).fillColor(MUTED).font('Helvetica').text(content.diagnosis?.body || '', PAD, bodyY, { width: IW, lineGap: 4 });
-
-    // Product suggestions
     const prodY = bodyY + textH(content.diagnosis?.body || '', 10, 'Helvetica', IW) + 32;
     doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold').text('STYLE SUGGESTIONS', PAD, prodY, { characterSpacing: 3 });
     doc.moveTo(PAD, prodY + 12).lineTo(PAD + IW, prodY + 12).strokeColor(BORDER).lineWidth(0.5).stroke();
@@ -708,21 +597,12 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
       doc.fontSize(10).fillColor(WHITE).font('Helvetica-Bold').text(piece.name || '', PAD + 14, cy + 24, { width: IW - 28 });
       doc.fontSize(8.5).fillColor(GREY).font('Helvetica').text(piece.why || '', PAD + 14, cy + 40, { width: IW - 28 });
     });
-
     footer();
-
-    // PAGE 2 — Upgrade CTA
-    doc.addPage();
-    bg();
-    pageHeader('Unlock Your Full Blueprint');
-
-    // Hero
+    doc.addPage(); bg(); pageHeader('Unlock Your Full Blueprint');
     doc.rect(0, 40, PW, 120).fill('#0E0C0A');
     doc.moveTo(0, 160).lineTo(PW, 160).strokeColor(BORDER).lineWidth(0.5).stroke();
     doc.fontSize(32).fillColor(WHITE).font('Helvetica-Bold').text('WANT THE FULL', PAD, 60);
     doc.fontSize(32).fillColor(GREEN).font('Helvetica-Bold').text('PICTURE?', PAD, 98);
-
-    // What's locked
     const lockedItems = [
       ['STYLE DNA', 'Your silhouette, fit language, fabrics and exactly what to avoid'],
       ['WARDROBE BLUEPRINT', '5 priorities in order — what to buy first and why'],
@@ -737,28 +617,20 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
       doc.fontSize(9).fillColor(GREY).font('Helvetica').text(desc, PAD + 14, lockY + 26, { width: IW - 28 });
       lockY += 60;
     });
-
-    // CTA block
     const ctaY = lockY + 20;
     doc.rect(PAD, ctaY, IW, 120).fill(GREEN);
     doc.fontSize(18).fillColor(BG).font('Helvetica-Bold').text('UNLOCK YOUR FULL BLUEPRINT', PAD + 20, ctaY + 18, { width: IW - 40, align: 'center' });
     doc.fontSize(12).fillColor(BG).font('Helvetica').text('Everything above. 6-page PDF. Built around your answers.', PAD + 20, ctaY + 50, { width: IW - 40, align: 'center' });
-    doc.fontSize(28).fillColor(BG).font('Helvetica-Bold').text('Standard £5.99  ·  Premium £9.99', PAD + 20, ctaY + 78, { width: IW - 40, align: 'center' });
-
+    doc.fontSize(28).fillColor(BG).font('Helvetica-Bold').text('Standard £4.99  ·  Premium £9.99', PAD + 20, ctaY + 78, { width: IW - 40, align: 'center' });
     doc.fontSize(10).fillColor(GREY).font('Helvetica').text('Visit outfitify.co.uk to unlock your report', PAD, ctaY + 136, { width: IW, align: 'center' });
-
     footer();
     doc.end();
-
     return new Promise((resolve, reject) => {
       stream.on('finish', () => resolve(pdfPath));
       stream.on('error', reject);
     });
   }
 
-  // ════════════════════════════════════════
-  // PAID TIER PDF — shared helpers
-  // ════════════════════════════════════════
   function truncateToFit(str, maxWidth, fontSize, fontName, maxLines) {
     if (!str) return '';
     doc.fontSize(fontSize).font(fontName || 'Helvetica');
@@ -786,7 +658,6 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
     if (sub) doc.fontSize(10).fillColor(GREY).font('Helvetica-Oblique').text(sub, PAD, 118, { width: IW });
   }
 
-  // PAGE 1
   bg();
   doc.rect(0, 40, PW, 200).fill('#0E0C0A');
   doc.moveTo(0, 240).lineTo(PW, 240).strokeColor(BORDER).lineWidth(0.5).stroke();
@@ -816,14 +687,12 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
   [["Why You've Been Getting It Wrong", 'Your personal style diagnosis'], ['Your Style DNA', 'Silhouette, fit, fabrics & colour'], ['Your Wardrobe Blueprint', '5 priorities & what to buy first'], ['Recommended Pieces', 'Hand-picked for your style & budget']].forEach(([title, desc], i) => {
     const col = i % 2, row = Math.floor(i / 2), cardW = (IW - 10) / 2;
     const x = PAD + col * (cardW + 10), y = insideY + 18 + row * 54;
-    doc.rect(x, y, cardW, 46).fill(CARD2);
-    doc.rect(x, y, 2, 46).fill(GREEN);
+    doc.rect(x, y, cardW, 46).fill(CARD2); doc.rect(x, y, 2, 46).fill(GREEN);
     doc.fontSize(9.5).fillColor(WHITE).font('Helvetica-Bold').text(title, x + 14, y + 8, { width: cardW - 24 });
     doc.fontSize(8).fillColor(GREY).font('Helvetica').text(desc, x + 14, y + 26, { width: cardW - 24 });
   });
   footer();
 
-  // PAGE 2
   doc.addPage(); bg(); pageHeader("Why You've Been Getting It Wrong");
   heroBlock("WHY YOU'VE BEEN", "GETTING IT WRONG");
   lcard(PAD, 144, IW, 52, GREEN);
@@ -835,7 +704,6 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
   doc.fontSize(13).fillColor(GREEN).font('Helvetica-Bold').text(content.diagnosis?.theTruth || '', PAD, truthY + 16, { width: IW, lineGap: 3 });
   footer();
 
-  // PAGE 3
   doc.addPage(); bg(); pageHeader('Your Style DNA');
   heroBlock('YOUR', 'STYLE DNA');
   let dnaY = 144;
@@ -849,7 +717,6 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
   });
   footer();
 
-  // PAGE 4
   doc.addPage(); bg(); pageHeader('Your Wardrobe Blueprint');
   heroBlock('YOUR WARDROBE', 'BLUEPRINT');
   doc.fontSize(10).fillColor(GREY).font('Helvetica-Oblique').text(content.wardrobeBlueprint?.headline || '', PAD, 144, { width: IW });
@@ -860,8 +727,7 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
     const shopH = textH(p.howToShop || '', 8, 'Helvetica-Oblique', textW);
     const h = Math.max(whyH + shopH + 36, 60);
     if (bpY + h > PH - 80) return;
-    doc.rect(PAD, bpY, IW, h).fill(CARD2);
-    doc.rect(PAD, bpY, 2, h).fill(GREEN);
+    doc.rect(PAD, bpY, IW, h).fill(CARD2); doc.rect(PAD, bpY, 2, h).fill(GREEN);
     doc.fontSize(24).fillColor(GREEN).font('Helvetica-Bold').text(`0${p.order}`, PAD + 10, bpY + (h - 24) / 2, { lineBreak: false });
     doc.fontSize(10).fillColor(WHITE).font('Helvetica-Bold').text(p.item || '', PAD + 52, bpY + 10, { width: textW, lineBreak: false });
     doc.fontSize(9).fillColor(MUTED).font('Helvetica').text(p.why || '', PAD + 52, bpY + 26, { width: textW, lineGap: 2 });
@@ -874,7 +740,6 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
   doc.fontSize(9.5).fillColor(MUTED).font('Helvetica').text(content.wardrobeBlueprint?.neverBuyAgain || '', PAD, neverY + 24, { width: IW, lineGap: 3 });
   footer();
 
-  // PAGE 5
   doc.addPage(); bg();
   const pieces = (content.recommendedPieces || []).slice(0, 9);
   pageHeader('Your Recommended Pieces');
@@ -913,7 +778,6 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
   }
   footer();
 
-  // PAGE 6 — Premium only: Where To Invest. Standard gets upgrade CTA page instead.
   if (tier === 'premium') {
     doc.addPage(); bg(); pageHeader('Where To Invest');
     heroBlock('WHERE TO', 'INVEST', 'Brands suited to your goal and budget');
@@ -926,8 +790,7 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
       const col = i % 2, row = Math.floor(i / 2);
       const sx = PAD + col * (shopColW + 12), rowH = row === 0 ? row0H : row1H;
       const cardY = 144 + (row === 0 ? 0 : row0H + 12);
-      doc.rect(sx, cardY, shopColW, rowH).fill(CARD);
-      doc.rect(sx, cardY, 2, rowH).fill(GREEN);
+      doc.rect(sx, cardY, shopColW, rowH).fill(CARD); doc.rect(sx, cardY, 2, rowH).fill(GREEN);
       doc.fontSize(30).fillColor(GREEN).font('Helvetica-Bold').text(`0${i + 1}`, sx + 14, cardY + 14, { lineBreak: false });
       doc.fontSize(13).fillColor(WHITE).font('Helvetica-Bold').text(shop.brand || '', sx + 14, cardY + 52, { width: shopColW - 28, lineBreak: false });
       doc.fontSize(9).fillColor(MUTED).font('Helvetica').text(shop.why || '', sx + 14, cardY + 72, { width: shopColW - 28, lineGap: 2 });
@@ -935,20 +798,16 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
       doc.fontSize(8).fillColor(GREEN).font('Helvetica-Oblique').text(`Best for: ${shop.bestFor || ''}`, sx + 14, cardY + 74 + shopWhyH, { width: shopColW - 28, lineGap: 2 });
     });
     const ctaY = PH - 28 - 12 - 56;
-    doc.rect(PAD, ctaY, IW, 56).fill(CARD2);
-    doc.rect(PAD, ctaY, IW, 56).strokeColor(GREEN).lineWidth(0.5).stroke();
-    doc.rect(PAD, ctaY, 2, 56).fill(GREEN);
+    doc.rect(PAD, ctaY, IW, 56).fill(CARD2); doc.rect(PAD, ctaY, IW, 56).strokeColor(GREEN).lineWidth(0.5).stroke(); doc.rect(PAD, ctaY, 2, 56).fill(GREEN);
     doc.fontSize(11).fillColor(WHITE).font('Helvetica-Bold').text('Know someone who needs this?', PAD + 16, ctaY + 12, { width: IW - 32 });
     doc.fontSize(9).fillColor(MUTED).font('Helvetica').text('Share outfitify.co.uk — every report is built fresh, personalised to whoever takes the quiz.', PAD + 16, ctaY + 30, { width: IW - 32 });
     footer();
   } else {
-    // STANDARD — upgrade to premium CTA page
     doc.addPage(); bg(); pageHeader('Unlock The Complete System');
     doc.rect(0, 40, PW, 120).fill('#0E0C0A');
     doc.moveTo(0, 160).lineTo(PW, 160).strokeColor(BORDER).lineWidth(0.5).stroke();
     doc.fontSize(32).fillColor(WHITE).font('Helvetica-Bold').text('WANT MORE?', PAD, 60);
     doc.fontSize(32).fillColor(GREEN).font('Helvetica-Bold').text('UPGRADE TO PREMIUM', PAD, 98);
-
     const upgradeItems = [
       ['9 PRODUCT PICKS', '4 more hand-picked products — full wardrobe coverage across every category'],
       ['WHERE TO INVEST', '4 brands specifically suited to your goal, lifestyle and budget'],
@@ -957,24 +816,20 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
     ];
     let uY = 180;
     upgradeItems.forEach(([label, desc]) => {
-      doc.rect(PAD, uY, IW, 56).fill(CARD2);
-      doc.rect(PAD, uY, 2, 56).fill(GREEN);
+      doc.rect(PAD, uY, IW, 56).fill(CARD2); doc.rect(PAD, uY, 2, 56).fill(GREEN);
       doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold').text(label, PAD + 14, uY + 10, { characterSpacing: 2 });
       doc.fontSize(9).fillColor(MUTED).font('Helvetica').text(desc, PAD + 14, uY + 26, { width: IW - 28 });
       uY += 64;
     });
-
-    // CTA
     const uCtaY = uY + 20;
     doc.rect(PAD, uCtaY, IW, 100).fill(GREEN);
     doc.fontSize(20).fillColor(BG).font('Helvetica-Bold').text('UPGRADE TO PREMIUM', PAD + 20, uCtaY + 16, { width: IW - 40, align: 'center' });
-    doc.fontSize(13).fillColor(BG).font('Helvetica').text('Everything above included. Just £4 more.', PAD + 20, uCtaY + 46, { width: IW - 40, align: 'center' });
+    doc.fontSize(13).fillColor(BG).font('Helvetica').text('Everything above included. Just £5 more.', PAD + 20, uCtaY + 46, { width: IW - 40, align: 'center' });
     doc.fontSize(22).fillColor(BG).font('Helvetica-Bold').text('£9.99  ·  outfitify.co.uk', PAD + 20, uCtaY + 68, { width: IW - 40, align: 'center' });
     footer();
   }
 
   doc.end();
-
   return new Promise((resolve, reject) => {
     stream.on('finish', () => resolve(pdfPath));
     stream.on('error', reject);
@@ -982,10 +837,7 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
 }
 
 async function sendEmail(toEmail, downloadUrl, styleIdentityName, tier = 'standard', sessionId = '') {
-
   const upgradeUrl = `https://unlock.outfitify.co.uk?sid=${sessionId}`;
-
-  // Tier-specific email content
   const tierContent = {
     free: {
       subject: `Your ${styleIdentityName} Style Starter is Ready`,
@@ -996,7 +848,7 @@ async function sendEmail(toEmail, downloadUrl, styleIdentityName, tier = 'standa
         <div style="background:#111111;border:1px solid #2A2520;border-left:3px solid #B8A898;padding:24px;margin:0 0 24px">
           <p style="color:#B8A898;font-size:10px;letter-spacing:3px;font-weight:600;margin:0 0 10px;text-transform:uppercase">Want the full picture?</p>
           <p style="color:#C8BFB5;font-size:13px;line-height:1.7;margin:0 0 16px">Your free report shows you the problem. Your full blueprint shows you exactly how to fix it — with your complete Style DNA, wardrobe priorities, and hand-picked products with links and prices.</p>
-          <a href="${upgradeUrl}" style="display:block;background:#B8A898;color:#0A0A0A;text-align:center;padding:14px;font-size:11px;font-weight:600;letter-spacing:3px;text-decoration:none;text-transform:uppercase">UNLOCK YOUR FULL BLUEPRINT — £5.99 →</a>
+          <a href="${upgradeUrl}" style="display:block;background:#B8A898;color:#0A0A0A;text-align:center;padding:14px;font-size:11px;font-weight:600;letter-spacing:3px;text-decoration:none;text-transform:uppercase">UNLOCK YOUR FULL BLUEPRINT — £4.99 →</a>
         </div>`,
     },
     standard: {
@@ -1007,7 +859,7 @@ async function sendEmail(toEmail, downloadUrl, styleIdentityName, tier = 'standa
       upsell: `
         <div style="background:#111111;border:1px solid #2A2520;border-left:3px solid #B8A898;padding:24px;margin:0 0 24px">
           <p style="color:#B8A898;font-size:10px;letter-spacing:3px;font-weight:600;margin:0 0 10px;text-transform:uppercase">Want the complete system?</p>
-          <p style="color:#C8BFB5;font-size:13px;line-height:1.7;margin:0 0 16px">Upgrade to Premium for 9 product recommendations, 4 brand picks tailored to your style, the never buy again list, and cost per wear insight — all for just £4 more.</p>
+          <p style="color:#C8BFB5;font-size:13px;line-height:1.7;margin:0 0 16px">Upgrade to Premium for 9 product recommendations, 4 brand picks tailored to your style, the never buy again list, and cost per wear insight — all for just £5 more.</p>
           <a href="${process.env.BASE_URL || 'https://outfitify-backend-production.up.railway.app'}/api/upgrade-to-premium/${sessionId}" style="display:block;background:#B8A898;color:#0A0A0A;text-align:center;padding:14px;font-size:11px;font-weight:600;letter-spacing:3px;text-decoration:none;text-transform:uppercase">UPGRADE TO PREMIUM — £9.99 →</a>
         </div>`,
     },
@@ -1024,7 +876,6 @@ async function sendEmail(toEmail, downloadUrl, styleIdentityName, tier = 'standa
   };
 
   const content = tierContent[tier] || tierContent.standard;
-
   const emailBody = {
     from: { address: 'outfitify@outfitify.co.uk', name: 'Outfitify' },
     to: [{ email_address: { address: toEmail } }],
@@ -1038,13 +889,9 @@ async function sendEmail(toEmail, downloadUrl, styleIdentityName, tier = 'standa
         <div style="padding:44px 40px">
           <h2 style="color:#F2EDE6;font-size:26px;font-weight:300;margin:0 0 12px;line-height:1.2">${content.headline}</h2>
           <p style="color:#7A6E66;font-size:14px;line-height:1.7;margin:0 0 32px">${content.body}</p>
-          <a href="${downloadUrl}" style="display:block;background:#F2EDE6;color:#0A0A0A;text-align:center;padding:16px;font-size:11px;font-weight:600;letter-spacing:3px;text-decoration:none;margin:0 0 32px;text-transform:uppercase">
-            ${content.downloadLabel}
-          </a>
+          <a href="${downloadUrl}" style="display:block;background:#F2EDE6;color:#0A0A0A;text-align:center;padding:16px;font-size:11px;font-weight:600;letter-spacing:3px;text-decoration:none;margin:0 0 32px;text-transform:uppercase">${content.downloadLabel}</a>
           ${content.upsell}
-          <p style="color:#4A4440;font-size:12px;text-align:center;border-top:1px solid #2A2520;padding-top:20px;margin:0">
-            This link is unique to you. If you have any issues, reply to this email.
-          </p>
+          <p style="color:#4A4440;font-size:12px;text-align:center;border-top:1px solid #2A2520;padding-top:20px;margin:0">This link is unique to you. If you have any issues, reply to this email.</p>
         </div>
         <div style="background:#111111;border-top:1px solid #2A2520;padding:16px 40px;text-align:center">
           <p style="color:#4A4440;font-size:10px;letter-spacing:2px;margin:0">OUTFITIFY · MAKING STYLE EFFORTLESS · OUTFITIFY.CO.UK</p>
