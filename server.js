@@ -567,6 +567,8 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
   const WHITE = '#F2EDE6', GREY = '#7A6E66', MUTED = '#C8BFB5';
   const CARD = '#141210', CARD2 = '#1C1916', RED = '#C4886A';
   const PW = 595, PH = 842, PAD = 50, IW = 495;
+  // Safe bottom limit — footer is 28px, leave 8px breathing room
+  const SAFE_BOTTOM = PH - 36;
 
   function bg() { doc.rect(0, 0, PW, PH).fill(BG); }
   function pageHeader(sub) {
@@ -590,14 +592,19 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
   }
 
   if (tier === 'free') {
+    // ── PAGE 1 ──────────────────────────────────────────────────────────────
     bg();
     doc.rect(0, 40, PW, 200).fill('#0E0C0A');
     doc.moveTo(0, 240).lineTo(PW, 240).strokeColor(BORDER).lineWidth(0.5).stroke();
     pageHeader('Your Free Style Starter');
+
+    // Style identity hero
     const nameParts = (content.styleIdentity?.name || 'YOUR STYLE').split(' ');
     doc.fontSize(54).fillColor(WHITE).font('Helvetica-Bold').text((nameParts[0] || '').toUpperCase(), PAD, 60);
     doc.fontSize(54).fillColor(GREEN).font('Helvetica-Bold').text((nameParts.slice(1).join(' ') || '').toUpperCase(), PAD, 118);
     doc.fontSize(10).fillColor(GREY).font('Helvetica-Oblique').text(content.styleIdentity?.tagline || '', PAD, 194, { width: IW });
+
+    // Colour palette
     const paletteY = 256;
     doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold').text('YOUR COLOUR PALETTE', PAD, paletteY, { characterSpacing: 3 });
     doc.moveTo(PAD, paletteY + 12).lineTo(PAD + IW, paletteY + 12).strokeColor(BORDER).lineWidth(0.5).stroke();
@@ -605,51 +612,80 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
     (content.colourPalette?.colours || []).slice(0, 3).forEach((hex, i) => {
       doc.rect(PAD + i * (sw + swGap), swatchY, sw, sw).fill(hex);
     });
+
+    // Diagnosis
     const diagY = swatchY + sw + 32;
     doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold').text('YOUR DIAGNOSIS', PAD, diagY, { characterSpacing: 3 });
     doc.moveTo(PAD, diagY + 12).lineTo(PAD + IW, diagY + 12).strokeColor(BORDER).lineWidth(0.5).stroke();
     lcard(PAD, diagY + 20, IW, 52, GREEN);
     doc.fontSize(12).fillColor(WHITE).font('Helvetica-Bold').text(content.diagnosis?.headline || '', PAD + 16, diagY + 32, { width: IW - 32, lineGap: 2 });
+
+    const bodyText = content.diagnosis?.body || '';
     const bodyY = diagY + 88;
-    doc.fontSize(10).fillColor(MUTED).font('Helvetica').text(content.diagnosis?.body || '', PAD, bodyY, { width: IW, lineGap: 4 });
+    const bodyH = textH(bodyText, 10, 'Helvetica', IW);
+    doc.fontSize(10).fillColor(MUTED).font('Helvetica').text(bodyText, PAD, bodyY, { width: IW, lineGap: 4 });
 
-    // STYLE DNA — partial reveal
-    const dnaRevealY = bodyY + textH(content.diagnosis?.body || '', 10, 'Helvetica', IW) + 24;
-    if (content.styleDNA?.silhouette) {
-      doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold').text('YOUR SILHOUETTE', PAD, dnaRevealY, { characterSpacing: 3 });
-      doc.moveTo(PAD, dnaRevealY + 12).lineTo(PAD + IW, dnaRevealY + 12).strokeColor(BORDER).lineWidth(0.5).stroke();
-      lcard(PAD, dnaRevealY + 20, IW, Math.max(textH(content.styleDNA.silhouette, 9.5, 'Helvetica', IW - 28) + 28, 48), GREEN);
-      doc.fontSize(9.5).fillColor(MUTED).font('Helvetica').text(content.styleDNA.silhouette, PAD + 14, dnaRevealY + 32, { width: IW - 28, lineGap: 3 });
+    // Track current Y position after diagnosis
+    let curY = bodyY + bodyH + 24;
+
+    // Silhouette — only render if it fits
+    const silText = content.styleDNA?.silhouette || '';
+    const silCardH = Math.max(textH(silText, 9.5, 'Helvetica', IW - 28) + 28, 48);
+    const silBlockH = 20 + silCardH + 16; // label + card + gap
+    if (silText && curY + silBlockH < SAFE_BOTTOM - 140) { // 140 = min space needed for avoid + suggestions
+      doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold').text('YOUR SILHOUETTE', PAD, curY, { characterSpacing: 3 });
+      doc.moveTo(PAD, curY + 12).lineTo(PAD + IW, curY + 12).strokeColor(BORDER).lineWidth(0.5).stroke();
+      lcard(PAD, curY + 20, IW, silCardH, GREEN);
+      doc.fontSize(9.5).fillColor(MUTED).font('Helvetica').text(silText, PAD + 14, curY + 32, { width: IW - 28, lineGap: 3 });
+      curY += silBlockH;
     }
-    const silH = content.styleDNA?.silhouette ? Math.max(textH(content.styleDNA.silhouette, 9.5, 'Helvetica', IW - 28) + 28, 48) + 36 : 0;
 
-    // AVOID — one specific call-out
-    const avoidY = dnaRevealY + silH;
-    if (content.styleDNA?.avoid) {
-      doc.fontSize(6.5).fillColor(RED).font('Helvetica-Bold').text('STOP DOING THIS', PAD, avoidY, { characterSpacing: 3 });
-      doc.moveTo(PAD, avoidY + 12).lineTo(PAD + IW, avoidY + 12).strokeColor(BORDER).lineWidth(0.5).stroke();
-      lcard(PAD, avoidY + 20, IW, Math.max(textH(content.styleDNA.avoid, 9.5, 'Helvetica', IW - 28) + 28, 48), RED);
-      doc.fontSize(9.5).fillColor(MUTED).font('Helvetica').text(content.styleDNA.avoid, PAD + 14, avoidY + 32, { width: IW - 28, lineGap: 3 });
+    // Stop Doing This — only render if it fits
+    const avoidText = content.styleDNA?.avoid || '';
+    const avoidCardH = Math.max(textH(avoidText, 9.5, 'Helvetica', IW - 28) + 28, 48);
+    const avoidBlockH = 20 + avoidCardH + 16;
+    if (avoidText && curY + avoidBlockH < SAFE_BOTTOM - 80) { // 80 = min space for at least label
+      doc.fontSize(6.5).fillColor(RED).font('Helvetica-Bold').text('STOP DOING THIS', PAD, curY, { characterSpacing: 3 });
+      doc.moveTo(PAD, curY + 12).lineTo(PAD + IW, curY + 12).strokeColor(BORDER).lineWidth(0.5).stroke();
+      lcard(PAD, curY + 20, IW, avoidCardH, RED);
+      doc.fontSize(9.5).fillColor(MUTED).font('Helvetica').text(avoidText, PAD + 14, curY + 32, { width: IW - 28, lineGap: 3 });
+      curY += avoidBlockH;
     }
-    const avoidH = content.styleDNA?.avoid ? Math.max(textH(content.styleDNA.avoid, 9.5, 'Helvetica', IW - 28) + 28, 48) + 24 : 0;
 
-    const prodY = avoidY + avoidH;
-    doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold').text('STYLE SUGGESTIONS', PAD, prodY, { characterSpacing: 3 });
-    doc.moveTo(PAD, prodY + 12).lineTo(PAD + IW, prodY + 12).strokeColor(BORDER).lineWidth(0.5).stroke();
-    (content.recommendedPieces || []).slice(0, 2).forEach((piece, i) => {
-      const cy = prodY + 24 + i * 68;
-      doc.rect(PAD, cy, IW, 60).fill(CARD);
-      doc.rect(PAD, cy, 2, 60).fill(GREEN);
-      doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold').text((piece.category || '').toUpperCase(), PAD + 14, cy + 10, { characterSpacing: 1.5 });
-      doc.fontSize(10).fillColor(WHITE).font('Helvetica-Bold').text(piece.name || '', PAD + 14, cy + 24, { width: IW - 28 });
-      doc.fontSize(8.5).fillColor(GREY).font('Helvetica').text(piece.why || '', PAD + 14, cy + 40, { width: IW - 28 });
-    });
+    // Style suggestions — only render cards that physically fit, skip label if none fit
+    const pieces = (content.recommendedPieces || []).slice(0, 2);
+    const PIECE_H = 60, PIECE_GAP = 8;
+    const labelH = 20; // section label + rule
+    const spaceLeft = SAFE_BOTTOM - curY;
+
+    if (spaceLeft > labelH + PIECE_H) {
+      // Enough room for label + at least one card
+      doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold').text('STYLE SUGGESTIONS', PAD, curY, { characterSpacing: 3 });
+      doc.moveTo(PAD, curY + 12).lineTo(PAD + IW, curY + 12).strokeColor(BORDER).lineWidth(0.5).stroke();
+      curY += labelH + 4;
+
+      pieces.forEach((piece, i) => {
+        const cardTop = curY + i * (PIECE_H + PIECE_GAP);
+        if (cardTop + PIECE_H > SAFE_BOTTOM) return; // skip if this card won't fit
+        doc.rect(PAD, cardTop, IW, PIECE_H).fill(CARD);
+        doc.rect(PAD, cardTop, 2, PIECE_H).fill(GREEN);
+        doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold').text((piece.category || '').toUpperCase(), PAD + 14, cardTop + 10, { characterSpacing: 1.5 });
+        doc.fontSize(10).fillColor(WHITE).font('Helvetica-Bold').text(piece.name || '', PAD + 14, cardTop + 24, { width: IW - 28, lineBreak: false });
+        doc.fontSize(8.5).fillColor(GREY).font('Helvetica').text(piece.why || '', PAD + 14, cardTop + 40, { width: IW - 28, lineBreak: false });
+      });
+    }
+
     footer();
-    doc.addPage(); bg(); pageHeader('Unlock Your Full Blueprint');
+
+    // ── PAGE 2 ──────────────────────────────────────────────────────────────
+    doc.addPage();
+    bg();
+    pageHeader('Unlock Your Full Blueprint');
     doc.rect(0, 40, PW, 120).fill('#0E0C0A');
     doc.moveTo(0, 160).lineTo(PW, 160).strokeColor(BORDER).lineWidth(0.5).stroke();
     doc.fontSize(32).fillColor(WHITE).font('Helvetica-Bold').text('ONE BLUEPRINT AWAY', PAD, 52);
     doc.fontSize(22).fillColor(GREEN).font('Helvetica-Bold').text('from never second-guessing a purchase again.', PAD, 96, { width: IW });
+
     const lockedItems = [
       ['FULL STYLE DNA', 'Fit language, fabrics, colour usage — the complete system for your body'],
       ['WARDROBE BLUEPRINT', '5 priorities in order — what to buy first, what to never buy again'],
@@ -664,6 +700,7 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
       doc.fontSize(9).fillColor(GREY).font('Helvetica').text(desc, PAD + 14, lockY + 26, { width: IW - 28 });
       lockY += 60;
     });
+
     const ctaY = lockY + 20;
     doc.rect(PAD, ctaY, IW, 140).fill(GREEN);
     doc.fontSize(11).fillColor(BG).font('Helvetica-Bold').text('YOUR STYLE IS FIXABLE.', PAD + 20, ctaY + 16, { width: IW - 40, align: 'center', characterSpacing: 2 });
@@ -672,12 +709,15 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
     doc.fontSize(28).fillColor(BG).font('Helvetica-Bold').text('£4.99', PAD + 20, ctaY + 100, { width: IW - 40, align: 'center' });
     doc.fontSize(11).fillColor(BG).font('Helvetica').text('outfitify.co.uk  ·  Takes 2 minutes', PAD + 20, ctaY + 128, { width: IW - 40, align: 'center', characterSpacing: 1 });
     footer();
+
     doc.end();
     return new Promise((resolve, reject) => {
       stream.on('finish', () => resolve(pdfPath));
       stream.on('error', reject);
     });
   }
+
+  // ── PAID TIERS ────────────────────────────────────────────────────────────
 
   function truncateToFit(str, maxWidth, fontSize, fontName, maxLines) {
     if (!str) return '';
