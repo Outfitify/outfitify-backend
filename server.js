@@ -632,7 +632,7 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
     const silText = content.styleDNA?.silhouette || '';
     const silCardH = Math.max(textH(silText, 9.5, 'Helvetica', IW - 28) + 28, 48);
     const silBlockH = 20 + silCardH + 16; // label + card + gap
-    if (silText && curY + silBlockH < SAFE_BOTTOM - 140) { // 140 = min space needed for avoid + suggestions
+    if (silText && curY + silBlockH < SAFE_BOTTOM - 60) {
       doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold').text('YOUR SILHOUETTE', PAD, curY, { characterSpacing: 3 });
       doc.moveTo(PAD, curY + 12).lineTo(PAD + IW, curY + 12).strokeColor(BORDER).lineWidth(0.5).stroke();
       lcard(PAD, curY + 20, IW, silCardH, GREEN);
@@ -644,7 +644,7 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
     const avoidText = content.styleDNA?.avoid || '';
     const avoidCardH = Math.max(textH(avoidText, 9.5, 'Helvetica', IW - 28) + 28, 48);
     const avoidBlockH = 20 + avoidCardH + 16;
-    if (avoidText && curY + avoidBlockH < SAFE_BOTTOM - 80) { // 80 = min space for at least label
+    if (avoidText && curY + avoidBlockH < SAFE_BOTTOM) {
       doc.fontSize(6.5).fillColor(RED).font('Helvetica-Bold').text('STOP DOING THIS', PAD, curY, { characterSpacing: 3 });
       doc.moveTo(PAD, curY + 12).lineTo(PAD + IW, curY + 12).strokeColor(BORDER).lineWidth(0.5).stroke();
       lcard(PAD, curY + 20, IW, avoidCardH, RED);
