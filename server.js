@@ -416,14 +416,40 @@ async function generateReportContent(quizData, products, tier = 'standard') {
   const tierInstructions = {
     free: `
 REPORT TIER: FREE
-Generate a basic style starter report. Keep it simple and surface-level — enough to make the customer feel understood but not enough to fully solve their problem. This creates desire to upgrade.
-- styleIdentity: name and tagline only — make it compelling so they want the full report
-- colourPalette: exactly 3 colours, no rationale text (leave rationale as empty string "")
-- diagnosis: headline only + 2-sentence body — identify the problem but don't solve it. Leave theTruth as empty string ""
-- styleDNA: leave ALL fields as empty strings — not included in free tier
-- wardrobeBlueprint: leave headline and ALL priorities as empty/null — not included in free tier. Leave neverBuyAgain and costPerWear as empty strings
-- recommendedPieces: exactly 2 items. NO url (set to ""), NO brand (set to ""), NO price (set to ""). Name should be a generic description only e.g. "A fitted white crew neck t-shirt in breathable cotton" — do NOT use actual product names from the list
-- whereToInvest: empty array []`,
+Generate a style starter report that makes the customer feel genuinely understood — but leaves them wanting more. The goal is to build trust through quality, then create desire through strategic incompleteness. Every word must feel personal and specific, never generic.
+
+STYLE IDENTITY:
+- name: 2-3 word style archetype — make it intriguing and specific e.g. "Sharp Minimalist", "Urban Edge", "Relaxed Authority"
+- tagline: One punchy sentence that makes them think "that's exactly me"
+- intro: Write a compelling 2-3 sentence paragraph that expands on what this style identity means for THIS person specifically — describe how they probably dress now, why it's not quite working, and what the archetype looks like when it's done right. Make them feel completely seen. This is your biggest conversion hook — if they read this and feel understood, they'll pay.
+
+COLOUR PALETTE:
+- exactly 3 colours with labels — include the colour names so it feels considered, not like a placeholder
+- rationale: empty string "" — the rationale is locked in the paid tier
+
+DIAGNOSIS:
+- headline: One sharp, specific headline that names their exact problem
+- body: 2-3 sentences. Identify the root cause specifically tied to their answers. End with one sentence that hints at what changes when they have the system — but don't give the system away. Leave theTruth as empty string ""
+
+STYLE DNA — partial reveal, not fully locked:
+- silhouette: Write ONE sentence revealing their primary silhouette recommendation. End with "— the fit language, fabrics and colour usage that make this work for you are in your full blueprint." This partial reveal builds trust and creates desire.
+- fitLanguage: empty string ""
+- fabrics: empty string ""
+- colourUsage: empty string ""
+- avoid: Write ONE specific "stop doing this" call-out tied directly to their build and goal — e.g. "Your athletic frame means oversized fits work against you — they add bulk where you don't need it." This specificity proves the paid version knows what it's talking about.
+
+WARDROBE BLUEPRINT — leave all empty:
+- headline: empty string ""
+- priorities: empty array []
+- neverBuyAgain: empty string ""
+- costPerWear: empty string ""
+
+RECOMMENDED PIECES — one tease, one generic:
+- exactly 2 items
+- Item 1: A specific styled description that sounds like real styling advice — e.g. "A heavyweight oversized tee in off-white with a slight drop shoulder — worn untucked over straight-leg denim" — NO brand, NO url (set to ""), NO price (set to ""). Add a why field that says "This is pick 1 of 5 in your full blueprint — each one selected specifically for your build and budget."
+- Item 2: A second generic description with no brand, url or price. Why field should hint at what's locked: "Your remaining 4 picks include clickable links, brand names and exact prices — all filtered to your £X budget."
+
+WHERE TO INVEST: empty array []`,
     standard: `
 REPORT TIER: STANDARD
 Generate the full report EXCEPT whereToInvest. Include everything else at full detail.
@@ -586,7 +612,28 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
     doc.fontSize(12).fillColor(WHITE).font('Helvetica-Bold').text(content.diagnosis?.headline || '', PAD + 16, diagY + 32, { width: IW - 32, lineGap: 2 });
     const bodyY = diagY + 88;
     doc.fontSize(10).fillColor(MUTED).font('Helvetica').text(content.diagnosis?.body || '', PAD, bodyY, { width: IW, lineGap: 4 });
-    const prodY = bodyY + textH(content.diagnosis?.body || '', 10, 'Helvetica', IW) + 32;
+
+    // STYLE DNA — partial reveal
+    const dnaRevealY = bodyY + textH(content.diagnosis?.body || '', 10, 'Helvetica', IW) + 24;
+    if (content.styleDNA?.silhouette) {
+      doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold').text('YOUR SILHOUETTE', PAD, dnaRevealY, { characterSpacing: 3 });
+      doc.moveTo(PAD, dnaRevealY + 12).lineTo(PAD + IW, dnaRevealY + 12).strokeColor(BORDER).lineWidth(0.5).stroke();
+      lcard(PAD, dnaRevealY + 20, IW, Math.max(textH(content.styleDNA.silhouette, 9.5, 'Helvetica', IW - 28) + 28, 48), GREEN);
+      doc.fontSize(9.5).fillColor(MUTED).font('Helvetica').text(content.styleDNA.silhouette, PAD + 14, dnaRevealY + 32, { width: IW - 28, lineGap: 3 });
+    }
+    const silH = content.styleDNA?.silhouette ? Math.max(textH(content.styleDNA.silhouette, 9.5, 'Helvetica', IW - 28) + 28, 48) + 36 : 0;
+
+    // AVOID — one specific call-out
+    const avoidY = dnaRevealY + silH;
+    if (content.styleDNA?.avoid) {
+      doc.fontSize(6.5).fillColor(RED).font('Helvetica-Bold').text('STOP DOING THIS', PAD, avoidY, { characterSpacing: 3 });
+      doc.moveTo(PAD, avoidY + 12).lineTo(PAD + IW, avoidY + 12).strokeColor(BORDER).lineWidth(0.5).stroke();
+      lcard(PAD, avoidY + 20, IW, Math.max(textH(content.styleDNA.avoid, 9.5, 'Helvetica', IW - 28) + 28, 48), RED);
+      doc.fontSize(9.5).fillColor(MUTED).font('Helvetica').text(content.styleDNA.avoid, PAD + 14, avoidY + 32, { width: IW - 28, lineGap: 3 });
+    }
+    const avoidH = content.styleDNA?.avoid ? Math.max(textH(content.styleDNA.avoid, 9.5, 'Helvetica', IW - 28) + 28, 48) + 24 : 0;
+
+    const prodY = avoidY + avoidH;
     doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold').text('STYLE SUGGESTIONS', PAD, prodY, { characterSpacing: 3 });
     doc.moveTo(PAD, prodY + 12).lineTo(PAD + IW, prodY + 12).strokeColor(BORDER).lineWidth(0.5).stroke();
     (content.recommendedPieces || []).slice(0, 2).forEach((piece, i) => {
@@ -601,13 +648,13 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
     doc.addPage(); bg(); pageHeader('Unlock Your Full Blueprint');
     doc.rect(0, 40, PW, 120).fill('#0E0C0A');
     doc.moveTo(0, 160).lineTo(PW, 160).strokeColor(BORDER).lineWidth(0.5).stroke();
-    doc.fontSize(32).fillColor(WHITE).font('Helvetica-Bold').text('WANT THE FULL', PAD, 60);
-    doc.fontSize(32).fillColor(GREEN).font('Helvetica-Bold').text('PICTURE?', PAD, 98);
+    doc.fontSize(32).fillColor(WHITE).font('Helvetica-Bold').text('ONE BLUEPRINT AWAY', PAD, 52);
+    doc.fontSize(22).fillColor(GREEN).font('Helvetica-Bold').text('from never second-guessing a purchase again.', PAD, 96, { width: IW });
     const lockedItems = [
-      ['STYLE DNA', 'Your silhouette, fit language, fabrics and exactly what to avoid'],
-      ['WARDROBE BLUEPRINT', '5 priorities in order — what to buy first and why'],
-      ['5 PRODUCT PICKS', 'Hand-picked with brand, price and clickable links'],
-      ['WHERE TO INVEST', '4 brands suited to your goal and budget'],
+      ['FULL STYLE DNA', 'Fit language, fabrics, colour usage — the complete system for your body'],
+      ['WARDROBE BLUEPRINT', '5 priorities in order — what to buy first, what to never buy again'],
+      ['5 PRODUCT PICKS', 'Clickable links, brand names and exact prices — filtered to your budget'],
+      ['WHERE TO INVEST', '4 brands specifically suited to your goal and lifestyle'],
     ];
     let lockY = 180;
     lockedItems.forEach(([label, desc]) => {
@@ -618,11 +665,12 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
       lockY += 60;
     });
     const ctaY = lockY + 20;
-    doc.rect(PAD, ctaY, IW, 120).fill(GREEN);
-    doc.fontSize(18).fillColor(BG).font('Helvetica-Bold').text('UNLOCK YOUR FULL BLUEPRINT', PAD + 20, ctaY + 18, { width: IW - 40, align: 'center' });
-    doc.fontSize(12).fillColor(BG).font('Helvetica').text('Everything above. 6-page PDF. Built around your answers.', PAD + 20, ctaY + 50, { width: IW - 40, align: 'center' });
-    doc.fontSize(28).fillColor(BG).font('Helvetica-Bold').text('Standard £4.99  ·  Premium £9.99', PAD + 20, ctaY + 78, { width: IW - 40, align: 'center' });
-    doc.fontSize(10).fillColor(GREY).font('Helvetica').text('Visit outfitify.co.uk to unlock your report', PAD, ctaY + 136, { width: IW, align: 'center' });
+    doc.rect(PAD, ctaY, IW, 140).fill(GREEN);
+    doc.fontSize(11).fillColor(BG).font('Helvetica-Bold').text('YOUR STYLE IS FIXABLE.', PAD + 20, ctaY + 16, { width: IW - 40, align: 'center', characterSpacing: 2 });
+    doc.fontSize(22).fillColor(BG).font('Helvetica-Bold').text('500+ men have already sorted it.', PAD + 20, ctaY + 38, { width: IW - 40, align: 'center' });
+    doc.fontSize(13).fillColor(BG).font('Helvetica').text('Your full blueprint is waiting — built around your answers, ready to use today.', PAD + 20, ctaY + 68, { width: IW - 40, align: 'center', lineGap: 2 });
+    doc.fontSize(28).fillColor(BG).font('Helvetica-Bold').text('£4.99', PAD + 20, ctaY + 100, { width: IW - 40, align: 'center' });
+    doc.fontSize(11).fillColor(BG).font('Helvetica').text('outfitify.co.uk  ·  Takes 2 minutes', PAD + 20, ctaY + 128, { width: IW - 40, align: 'center', characterSpacing: 1 });
     footer();
     doc.end();
     return new Promise((resolve, reject) => {
