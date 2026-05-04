@@ -107,7 +107,14 @@ async function addToMailchimp(email, quizData, tier = 'free') {
       {
         email_address: email,
         status: 'subscribed',
-        merge_fields: { BUDGET: quizData.budget || '', LIFESTYLE: quizData.lifestyle || '', GOAL: quizData.goal || '', FIT: quizData.fit || '' },
+        merge_fields: {
+          BUDGET: quizData.budget || '',
+          LIFESTYLE: quizData.lifestyle || '',
+          GOAL: quizData.goal || '',
+          FIT: quizData.fit || '',
+          STRUGGLES: quizData.struggles || '',
+          SID: quizData.sessionId || '',
+        },
         tags: [tag],
       },
       { auth: { username: 'anystring', password: apiKey }, headers: { 'Content-Type': 'application/json' }, validateStatus: (s) => s < 500 }
@@ -132,13 +139,90 @@ app.post('/api/free-report', async (req, res) => {
   const { budget, struggles, lifestyle, goal, fit, email } = req.body;
   if (!budget || !email) return res.status(400).json({ error: 'Missing required fields' });
   const sessionId = crypto.randomBytes(16).toString('hex');
-  const quizData = { budget, struggles, lifestyle, goal, fit };
+  const quizData = { budget, struggles, lifestyle, goal, fit, sessionId };
   saveFreeSession(sessionId, { ...quizData, email, createdAt: Date.now() });
   res.json({ success: true, sessionId });
   addToMailchimp(email, quizData).catch(err => console.error('Mailchimp failed:', err));
   generateAndStoreReport(sessionId, quizData, email, 'free').catch(err => {
     console.error(`Free report generation failed for ${sessionId}:`, err);
   });
+});
+
+// CREATE CHECKOUT DIRECT — accepts quiz answers in body, no session lookup needed
+// Used by email upgrade links so answers come from Mailchimp merge fields
+app.post('/api/create-checkout-direct', async (req, res) => {
+  const { budget, struggles, lifestyle, goal, fit, tier, sid } = req.body;
+  if (!budget) return res.status(400).json({ error: 'Missing required fields' });
+
+  const resolvedTier = tier || 'standard';
+  console.log(`Creating direct ${resolvedTier} checkout from email upgrade link`);
+
+  // Check 2-hour Premium offer window using original free session ID
+  const TWO_HOURS = 2 * 60 * 60 * 1000;
+  let applyPremiumOffer = false;
+  if (resolvedTier === 'premium' && sid) {
+    const freeSession = getFreeSession(sid);
+    if (freeSession && (Date.now() - freeSession.createdAt) < TWO_HOURS) {
+      applyPremiumOffer = true;
+      console.log(`2-hour Premium offer valid for session ${sid} — applying UPGRADE coupon`);
+    } else {
+      console.log(`2-hour Premium offer expired for session ${sid} — charging full £9.99`);
+    }
+  }
+
+  // Create a fresh session so the report can be generated after payment
+  const sessionId = crypto.randomBytes(16).toString('hex');
+  sessions.set(sessionId, { budget, struggles, lifestyle, goal, fit, createdAt: Date.now() });
+
+  const tierConfig = {
+    standard: { amount: 499, name: 'Outfitify Personal Style Blueprint — Standard' },
+    premium:  { amount: 999, name: 'Outfitify Personal Style Blueprint — Premium' },
+  };
+  const config = tierConfig[resolvedTier] || tierConfig.standard;
+
+  try {
+    const checkoutOptions = {
+      payment_method_types: ['card'],
+      customer_creation: 'always',
+      allow_promotion_codes: true,
+      line_items: [{
+        price_data: {
+          currency: 'gbp',
+          product_data: {
+            name: applyPremiumOffer ? 'Outfitify Personal Style Blueprint — Premium (2-Hour Offer)' : config.name,
+            description: 'Your personalised style diagnosis, blueprint, wardrobe formula and outfit examples — built around you.',
+            images: ['https://outfitify.co.uk/assets/images/image04.png']
+          },
+          unit_amount: config.amount
+        },
+        quantity: 1
+      }],
+      mode: 'payment',
+      success_url: `${process.env.SUCCESS_URL || 'https://success.outfitify.co.uk'}?token={CHECKOUT_SESSION_ID}&sid=${sessionId}`,
+      cancel_url: `https://unlock.outfitify.co.uk?cancelled=true`,
+      metadata: {
+        sessionId,
+        tier: resolvedTier,
+        budget:    budget    || '',
+        struggles: struggles || '',
+        lifestyle: lifestyle || '',
+        goal:      goal      || '',
+        fit:       fit       || '',
+      },
+    };
+
+    // Auto-apply UPGRADE coupon for valid 2-hour Premium offer
+    if (applyPremiumOffer) {
+      checkoutOptions.discounts = [{ coupon: 'UPGRADE' }];
+      checkoutOptions.allow_promotion_codes = false;
+    }
+
+    const checkoutSession = await stripe.checkout.sessions.create(checkoutOptions);
+    res.json({ url: checkoutSession.url });
+  } catch (err) {
+    console.error('Direct checkout error:', err);
+    res.status(500).json({ error: 'Payment setup failed' });
+  }
 });
 
 app.post('/api/create-checkout', async (req, res) => {
@@ -567,7 +651,6 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
   const WHITE = '#F2EDE6', GREY = '#7A6E66', MUTED = '#C8BFB5';
   const CARD = '#141210', CARD2 = '#1C1916', RED = '#C4886A';
   const PW = 595, PH = 842, PAD = 50, IW = 495;
-  // Safe bottom limit — footer is 28px, leave 8px breathing room
   const SAFE_BOTTOM = PH - 36;
 
   function bg() { doc.rect(0, 0, PW, PH).fill(BG); }
@@ -592,115 +675,80 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
   }
 
   if (tier === 'free') {
-    // ── PAGE 1 ──────────────────────────────────────────────────────────────
+    // PAGE 1
     bg();
     doc.rect(0, 40, PW, 200).fill('#0E0C0A');
     doc.moveTo(0, 240).lineTo(PW, 240).strokeColor(BORDER).lineWidth(0.5).stroke();
     pageHeader('Your Free Style Starter');
 
-    // Style identity hero
     const nameParts = (content.styleIdentity?.name || 'YOUR STYLE').split(' ');
     doc.fontSize(54).fillColor(WHITE).font('Helvetica-Bold').text((nameParts[0] || '').toUpperCase(), PAD, 60);
     doc.fontSize(54).fillColor(GREEN).font('Helvetica-Bold').text((nameParts.slice(1).join(' ') || '').toUpperCase(), PAD, 118);
     doc.fontSize(10).fillColor(GREY).font('Helvetica-Oblique').text(content.styleIdentity?.tagline || '', PAD, 194, { width: IW });
 
-    // Colour palette
-    const paletteY = 256;
+    // Intro paragraph — the conversion hook
+    const introText = content.styleIdentity?.intro || '';
+    const introH = Math.max(textH(introText, 10, 'Helvetica', IW - 28) + 36, 72);
+    lcard(PAD, 256, IW, introH, GREEN);
+    doc.fontSize(10).fillColor(MUTED).font('Helvetica').text(introText, PAD + 14, 272, { width: IW - 28, lineGap: 3 });
+
+    // Colour palette — swatches only, no labels (mystery)
+    const paletteY = 256 + introH + 20;
     doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold').text('YOUR COLOUR PALETTE', PAD, paletteY, { characterSpacing: 3 });
     doc.moveTo(PAD, paletteY + 12).lineTo(PAD + IW, paletteY + 12).strokeColor(BORDER).lineWidth(0.5).stroke();
     const sw = 80, swGap = 16, swatchY = paletteY + 24;
     (content.colourPalette?.colours || []).slice(0, 3).forEach((hex, i) => {
       doc.rect(PAD + i * (sw + swGap), swatchY, sw, sw).fill(hex);
     });
+    // Locked label under swatches
+    doc.fontSize(7).fillColor(GREY).font('Helvetica').text('Colour names and usage guide unlocked in your full blueprint', PAD, swatchY + sw + 8, { width: IW });
 
-    // Diagnosis
-    const diagY = swatchY + sw + 32;
+    // Diagnosis — headline only, no body
+    const diagY = swatchY + sw + 36;
     doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold').text('YOUR DIAGNOSIS', PAD, diagY, { characterSpacing: 3 });
     doc.moveTo(PAD, diagY + 12).lineTo(PAD + IW, diagY + 12).strokeColor(BORDER).lineWidth(0.5).stroke();
-    lcard(PAD, diagY + 20, IW, 52, GREEN);
+    lcard(PAD, diagY + 20, IW, 60, GREEN);
     doc.fontSize(12).fillColor(WHITE).font('Helvetica-Bold').text(content.diagnosis?.headline || '', PAD + 16, diagY + 32, { width: IW - 32, lineGap: 2 });
 
-    const bodyText = content.diagnosis?.body || '';
-    const bodyY = diagY + 88;
-    const bodyH = textH(bodyText, 10, 'Helvetica', IW);
-    doc.fontSize(10).fillColor(MUTED).font('Helvetica').text(bodyText, PAD, bodyY, { width: IW, lineGap: 4 });
+    // What's locked — teaser items
+    let curY = diagY + 96;
+    doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold').text("WHAT'S IN YOUR FULL BLUEPRINT", PAD, curY, { characterSpacing: 3 });
+    doc.moveTo(PAD, curY + 12).lineTo(PAD + IW, curY + 12).strokeColor(BORDER).lineWidth(0.5).stroke();
+    curY += 20;
+    const teaserItems = [
+      ['YOUR STYLE DNA', 'Exact fits, fabrics and silhouettes that work for your body'],
+      ['WARDROBE BLUEPRINT', '5 priorities in order — what to buy first, what to stop buying'],
+      ['5 HAND-PICKED PRODUCTS', 'Clickable links, brands and prices — filtered to your budget'],
+    ];
+    teaserItems.forEach(([label, desc]) => {
+      if (curY + 52 > SAFE_BOTTOM) return;
+      doc.rect(PAD, curY, IW, 48).fill(CARD2);
+      doc.rect(PAD, curY, 2, 48).fill(BORDER);
+      doc.fontSize(7).fillColor(GREY).font('Helvetica-Bold').text('[ LOCKED ]  ' + label, PAD + 14, curY + 8, { characterSpacing: 2 });
+      doc.fontSize(8.5).fillColor(GREY).font('Helvetica').text(desc, PAD + 14, curY + 24, { width: IW - 28 });
+      curY += 56;
+    });
 
-    // Track current Y position after diagnosis
-    let curY = bodyY + bodyH + 24;
-
-    // Silhouette — only render if it fits
-    const silText = content.styleDNA?.silhouette || '';
-    const silCardH = Math.max(textH(silText, 9.5, 'Helvetica', IW - 28) + 28, 48);
-    const silBlockH = 20 + silCardH + 16; // label + card + gap
-    if (silText && curY + silBlockH < SAFE_BOTTOM - 60) {
-      doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold').text('YOUR SILHOUETTE', PAD, curY, { characterSpacing: 3 });
-      doc.moveTo(PAD, curY + 12).lineTo(PAD + IW, curY + 12).strokeColor(BORDER).lineWidth(0.5).stroke();
-      lcard(PAD, curY + 20, IW, silCardH, GREEN);
-      doc.fontSize(9.5).fillColor(MUTED).font('Helvetica').text(silText, PAD + 14, curY + 32, { width: IW - 28, lineGap: 3 });
-      curY += silBlockH;
-    }
-
-    // Stop Doing This — only render if it fits
+    // STOP DOING THIS — red card
     const avoidText = content.styleDNA?.avoid || '';
-    const avoidCardH = Math.max(textH(avoidText, 9.5, 'Helvetica', IW - 28) + 28, 48);
-    const avoidBlockH = 20 + avoidCardH + 16;
-    if (avoidText && curY + avoidBlockH < SAFE_BOTTOM) {
-      doc.fontSize(6.5).fillColor(RED).font('Helvetica-Bold').text('STOP DOING THIS', PAD, curY, { characterSpacing: 3 });
+    if (avoidText && curY + 80 < SAFE_BOTTOM) {
+      const avoidCardH = Math.max(textH(avoidText, 9.5, 'Helvetica', IW - 28) + 28, 48);
+      doc.fontSize(6.5).fillColor(RED).font('Helvetica-Bold').text('STOP DOING THIS — FREE INSIGHT', PAD, curY, { characterSpacing: 3 });
       doc.moveTo(PAD, curY + 12).lineTo(PAD + IW, curY + 12).strokeColor(BORDER).lineWidth(0.5).stroke();
       lcard(PAD, curY + 20, IW, avoidCardH, RED);
       doc.fontSize(9.5).fillColor(MUTED).font('Helvetica').text(avoidText, PAD + 14, curY + 32, { width: IW - 28, lineGap: 3 });
-      curY += avoidBlockH;
-    }
-
-    // Helper to truncate text to fit within a fixed number of lines
-    function truncateText(str, maxWidth, fontSize, fontName, maxLines) {
-      if (!str) return '';
-      doc.fontSize(fontSize).font(fontName || 'Helvetica');
-      const maxH = maxLines * fontSize * 1.4;
-      if (doc.heightOfString(str, { width: maxWidth }) <= maxH) return str;
-      const words = str.split(' ');
-      let best = words[0];
-      for (let i = 2; i <= words.length; i++) {
-        const candidate = words.slice(0, i).join(' ') + '\u2026';
-        if (doc.heightOfString(candidate, { width: maxWidth }) <= maxH) best = candidate;
-        else break;
-      }
-      return best;
-    }
-
-    // Style suggestions — only render cards that physically fit, skip label if none fit
-    const pieces = (content.recommendedPieces || []).slice(0, 2);
-    const PIECE_H = 60, PIECE_GAP = 8;
-    const labelH = 20; // section label + rule
-    const spaceLeft = SAFE_BOTTOM - curY;
-
-    if (spaceLeft > labelH + PIECE_H) {
-      // Enough room for label + at least one card
-      doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold').text('STYLE SUGGESTIONS', PAD, curY, { characterSpacing: 3 });
-      doc.moveTo(PAD, curY + 12).lineTo(PAD + IW, curY + 12).strokeColor(BORDER).lineWidth(0.5).stroke();
-      curY += labelH + 4;
-
-      pieces.forEach((piece, i) => {
-        const cardTop = curY + i * (PIECE_H + PIECE_GAP);
-        if (cardTop + PIECE_H > SAFE_BOTTOM) return; // skip if this card won't fit
-        doc.rect(PAD, cardTop, IW, PIECE_H).fill(CARD);
-        doc.rect(PAD, cardTop, 2, PIECE_H).fill(GREEN);
-        doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold').text((piece.category || '').toUpperCase(), PAD + 14, cardTop + 10, { characterSpacing: 1.5 });
-        doc.fontSize(10).fillColor(WHITE).font('Helvetica-Bold').text(truncateText(piece.name || '', IW - 28, 10, 'Helvetica-Bold', 1), PAD + 14, cardTop + 24, { width: IW - 28, lineBreak: false });
-        doc.fontSize(8.5).fillColor(GREY).font('Helvetica').text(truncateText(piece.why || '', IW - 28, 8.5, 'Helvetica', 2), PAD + 14, cardTop + 40, { width: IW - 28, lineBreak: false });
-      });
     }
 
     footer();
 
-    // ── PAGE 2 ──────────────────────────────────────────────────────────────
+    // PAGE 2 — upgrade CTA
     doc.addPage();
     bg();
     pageHeader('Unlock Your Full Blueprint');
     doc.rect(0, 40, PW, 120).fill('#0E0C0A');
     doc.moveTo(0, 160).lineTo(PW, 160).strokeColor(BORDER).lineWidth(0.5).stroke();
-    doc.fontSize(32).fillColor(WHITE).font('Helvetica-Bold').text('ONE BLUEPRINT AWAY', PAD, 52);
-    doc.fontSize(22).fillColor(GREEN).font('Helvetica-Bold').text('from never second-guessing a purchase again.', PAD, 96, { width: IW });
+    doc.fontSize(32).fillColor(WHITE).font('Helvetica-Bold').text("YOU'VE GOT YOUR IDENTITY.", PAD, 52);
+    doc.fontSize(22).fillColor(GREEN).font('Helvetica-Bold').text('Now get the formula.', PAD, 96, { width: IW });
 
     const lockedItems = [
       ['FULL STYLE DNA', 'Fit language, fabrics, colour usage — the complete system for your body'],
@@ -719,11 +767,11 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
 
     const ctaY = lockY + 20;
     doc.rect(PAD, ctaY, IW, 140).fill(GREEN);
-    doc.fontSize(11).fillColor(BG).font('Helvetica-Bold').text('YOUR STYLE IS FIXABLE.', PAD + 20, ctaY + 16, { width: IW - 40, align: 'center', characterSpacing: 2 });
-    doc.fontSize(22).fillColor(BG).font('Helvetica-Bold').text('500+ men have already sorted it.', PAD + 20, ctaY + 38, { width: IW - 40, align: 'center' });
+    doc.fontSize(11).fillColor(BG).font('Helvetica-Bold').text('EVERYTHING YOU NEED TO STOP GUESSING.', PAD + 20, ctaY + 16, { width: IW - 40, align: 'center', characterSpacing: 1 });
+    doc.fontSize(22).fillColor(BG).font('Helvetica-Bold').text('Start dressing with intention.', PAD + 20, ctaY + 38, { width: IW - 40, align: 'center' });
     doc.fontSize(13).fillColor(BG).font('Helvetica').text('Your full blueprint is waiting — built around your answers, ready to use today.', PAD + 20, ctaY + 68, { width: IW - 40, align: 'center', lineGap: 2 });
     doc.fontSize(28).fillColor(BG).font('Helvetica-Bold').text('£4.99', PAD + 20, ctaY + 100, { width: IW - 40, align: 'center' });
-    doc.fontSize(11).fillColor(BG).font('Helvetica').text('outfitify.co.uk  ·  Takes 2 minutes', PAD + 20, ctaY + 128, { width: IW - 40, align: 'center', characterSpacing: 1 });
+    doc.fontSize(11).fillColor(BG).font('Helvetica').text('outfitify.co.uk  ·  Unlock in 60 seconds', PAD + 20, ctaY + 128, { width: IW - 40, align: 'center', characterSpacing: 1 });
     footer();
 
     doc.end();
@@ -733,8 +781,7 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
     });
   }
 
-  // ── PAID TIERS ────────────────────────────────────────────────────────────
-
+  // PAID TIERS — unchanged from your current working version
   function truncateToFit(str, maxWidth, fontSize, fontName, maxLines) {
     if (!str) return '';
     doc.fontSize(fontSize).font(fontName || 'Helvetica');
@@ -944,15 +991,19 @@ async function sendEmail(toEmail, downloadUrl, styleIdentityName, tier = 'standa
   const upgradeUrl = `https://unlock.outfitify.co.uk?sid=${sessionId}`;
   const tierContent = {
     free: {
-      subject: `Your ${styleIdentityName} Style Starter is Ready`,
+      subject: `Your ${styleIdentityName} Style Report is Ready`,
       headline: 'Your free style report is ready.',
       body: `Your <span style="color:#C8BFB5">${styleIdentityName}</span> style starter has been built — your style identity, colour palette and diagnosis, all based on your answers.`,
       downloadLabel: 'DOWNLOAD MY FREE REPORT →',
       upsell: `
-        <div style="background:#111111;border:1px solid #2A2520;border-left:3px solid #B8A898;padding:24px;margin:0 0 24px">
-          <p style="color:#B8A898;font-size:10px;letter-spacing:3px;font-weight:600;margin:0 0 10px;text-transform:uppercase">Want the full picture?</p>
-          <p style="color:#C8BFB5;font-size:13px;line-height:1.7;margin:0 0 16px">Your free report shows you the problem. Your full blueprint shows you exactly how to fix it — with your complete Style DNA, wardrobe priorities, and hand-picked products with links and prices.</p>
-          <a href="${upgradeUrl}" style="display:block;background:#B8A898;color:#0A0A0A;text-align:center;padding:14px;font-size:11px;font-weight:600;letter-spacing:3px;text-decoration:none;text-transform:uppercase">UNLOCK YOUR FULL BLUEPRINT — £4.99 →</a>
+        <div style="background:#B8A898;padding:20px 24px;margin:0 0 24px;text-align:center">
+          <p style="color:#0A0A0A;font-size:10px;letter-spacing:3px;font-weight:700;margin:0 0 8px;text-transform:uppercase">⚡ 2-Hour Offer</p>
+          <p style="color:#0A0A0A;font-size:15px;font-weight:700;margin:0 0 8px;line-height:1.4">Get the Premium blueprint for £4.99 — the price of Standard</p>
+          <p style="color:#2A2010;font-size:12px;margin:0 0 16px;line-height:1.5">9 hand-picked products with links and prices, your full Style DNA, wardrobe blueprint, 4 brand picks and the never buy again list — all for £4.99. This offer expires in 2 hours.</p>
+          <a href="${upgradeUrl}&tier=premium&sid=${sessionId}" style="display:inline-block;background:#0A0A0A;color:#F2EDE6;text-align:center;padding:14px 32px;font-size:11px;font-weight:600;letter-spacing:3px;text-decoration:none;text-transform:uppercase">GET PREMIUM FOR £4.99 — 2 HRS ONLY →</a>
+        </div>
+        <div style="background:#111111;border:1px solid #2A2520;padding:16px 24px;margin:0 0 24px;text-align:center">
+          <p style="color:#4A4440;font-size:11px;margin:0">After 2 hours, Premium is available at <span style="color:#B8A898">£9.99</span> · Standard at <span style="color:#B8A898">£4.99</span></p>
         </div>`,
     },
     standard: {
