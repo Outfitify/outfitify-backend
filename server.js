@@ -291,9 +291,23 @@ app.post('/webhook', async (req, res) => {
       lifestyle: session.metadata.lifestyle, goal: session.metadata.goal, fit: session.metadata.fit,
     };
     const tier = session.metadata.tier || 'standard';
-    generateAndStoreReport(sessionId, quizData, userEmail, tier).catch(err => {
-      console.error(`Unhandled error in generateAndStoreReport for ${sessionId}:`, err);
-    });
+    if (tier === 'occasion') {
+      const occasionData = {
+        occasion: session.metadata.occasion,
+        occasionName: session.metadata.occasionName,
+        budget: session.metadata.budget,
+        fit: session.metadata.fit,
+        occasionDetail: session.metadata.occasionDetail,
+        style: session.metadata.style,
+      };
+      generateOccasionReport(sessionId, occasionData, userEmail).catch(err => {
+        console.error(`Unhandled error in generateOccasionReport for ${sessionId}:`, err);
+      });
+    } else {
+      generateAndStoreReport(sessionId, quizData, userEmail, tier).catch(err => {
+        console.error(`Unhandled error in generateAndStoreReport for ${sessionId}:`, err);
+      });
+    }
   }
   res.json({ received: true });
 });
@@ -1067,6 +1081,362 @@ async function sendEmail(toEmail, downloadUrl, styleIdentityName, tier = 'standa
   });
   console.log(`${tier} email sent to ${toEmail}:`, response.data);
 }
+
+// ── OCCASION GUIDES ──────────────────────────────────────────────────────────
+
+app.post('/api/create-occasion-checkout', async (req, res) => {
+  const { occasion, occasionName, budget, fit, occasionDetail, style, email } = req.body;
+  if (!occasion || !email) return res.status(400).json({ error: 'Missing required fields' });
+
+  const sessionId = crypto.randomBytes(16).toString('hex');
+  const occasionData = { occasion, occasionName, budget, fit, occasionDetail, style, email, createdAt: Date.now() };
+  saveFreeSession(`occ_${sessionId}`, occasionData);
+
+  console.log(`Creating occasion checkout for ${occasion}, session ${sessionId}`);
+
+  try {
+    const checkoutSession = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      customer_creation: 'always',
+      allow_promotion_codes: true,
+      line_items: [{
+        price_data: {
+          currency: 'gbp',
+          product_data: {
+            name: `Outfitify — ${occasionName} Style Guide`,
+            description: `Your personalised outfit guide for ${occasionName} — built around your build, budget and style.`,
+            images: ['https://outfitify.co.uk/assets/images/image04.png']
+          },
+          unit_amount: 249
+        },
+        quantity: 1
+      }],
+      mode: 'payment',
+      success_url: `${process.env.SUCCESS_URL || 'https://success.outfitify.co.uk'}?token={CHECKOUT_SESSION_ID}&sid=${sessionId}&occasion=true`,
+      cancel_url: `https://occasions.outfitify.co.uk`,
+      metadata: {
+        sessionId,
+        tier: 'occasion',
+        occasion,
+        occasionName,
+        budget: budget || '',
+        fit: fit || '',
+        occasionDetail: occasionDetail || '',
+        style: style || '',
+        email,
+      },
+    });
+    res.json({ url: checkoutSession.url });
+  } catch (err) {
+    console.error('Occasion checkout error:', err);
+    res.status(500).json({ error: 'Payment setup failed' });
+  }
+});
+
+async function generateOccasionReport(sessionId, occasionData, userEmail) {
+  activeJobs++;
+  console.log(`Generating occasion report for ${occasionData.occasion}, session ${sessionId}... (active jobs: ${activeJobs})`);
+  try {
+    const products = await fetchProducts(occasionData.budget, occasionData.style);
+    const reportContent = await generateOccasionContent(occasionData, products);
+    const pdfPath = await buildOccasionPDF(reportContent, occasionData, products);
+    const token = crypto.randomBytes(32).toString('hex');
+    saveDownload(sessionId, { token, pdfPath, email: userEmail, quizData: occasionData, tier: 'occasion', createdAt: Date.now() });
+    const downloadUrl = `${process.env.BASE_URL}/api/download/${token}`;
+    await sendOccasionEmail(userEmail, downloadUrl, occasionData.occasionName, sessionId);
+    console.log(`Occasion report ready for session ${sessionId}`);
+  } catch (err) {
+    console.error(`Occasion report generation failed for ${sessionId}:`, err);
+  } finally {
+    activeJobs--;
+    console.log(`Occasion job done for ${sessionId}. Active jobs remaining: ${activeJobs}`);
+  }
+}
+
+async function generateOccasionContent(occasionData, products) {
+  const productSummary = [];
+  for (const [cat, items] of Object.entries(products)) {
+    items.slice(0, 3).forEach(p => productSummary.push({
+      name: p['Item Name'], brand: p['Brand'], price: `£${p['Price']}`, url: p['Product URL'], category: cat,
+    }));
+  }
+
+  const prompt = `You are a real personal stylist writing directly to a man who needs help dressing for a specific occasion. Write like a knowledgeable friend giving direct, honest, specific advice — not like a report being generated.
+
+OCCASION: ${occasionData.occasionName}
+OCCASION DETAIL: ${occasionData.occasionDetail}
+BUDGET PER ITEM: ${occasionData.budget}
+BUILD: ${occasionData.fit}
+STYLE PREFERENCE: ${occasionData.style}
+
+TONE RULES — CRITICAL:
+- Write like a real person talking, not a document being generated
+- Direct, warm, specific — like advice from a friend who knows about clothes
+- Never use: system, intentional, cohesive, silhouette, taper, aesthetic, palette, framework, elevate, curated
+- Replace any fashion jargon with plain English
+- Every sentence must be specific to this person's occasion, build and budget
+- Short punchy sentences — no waffle
+
+Generate JSON only, no markdown:
+{
+  "occasionTitle": "Short punchy title for this occasion e.g. 'Your Date Night Look'",
+  "openingNote": "2-3 sentences written like a personal note from a stylist — acknowledge the specific occasion detail they gave, what the goal is for their look, and what you're going to give them. Warm and direct.",
+  "whatToWear": {
+    "headline": "One punchy sentence summarising the overall outfit direction",
+    "outfitFormula": "3-4 sentences describing the complete outfit from top to bottom in plain English — specific to their build and the occasion. No jargon. Tell them exactly what to wear and why it works.",
+    "fitAdvice": "2 sentences of specific fit advice for their build — what to look for and what to avoid when trying things on."
+  },
+  "whatToAvoid": "2-3 specific things to avoid for this occasion and their build — written like a friend telling them honestly what not to do. Specific, not generic.",
+  "stylistTip": "One insider tip that most people don't know — specific to this occasion. Should feel like a genuine secret from someone who knows.",
+  "recommendedPieces": [
+    {
+      "category": "category name",
+      "name": "exact product name from the list",
+      "brand": "brand",
+      "price": "£XX",
+      "url": "exact url",
+      "why": "One sentence — why this specific piece works for their occasion and build"
+    }
+  ]
+}
+
+Pick exactly 3 products from this list that work best for this occasion:
+${JSON.stringify(productSummary, null, 2)}
+
+Rules:
+- JSON only, no markdown
+- recommendedPieces: exactly 3 items
+- Every field must be specific to the occasion and their answers
+- Never sound like AI generated this`;
+
+  let parsed = null;
+  let lastError = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const message = await anthropic.messages.create({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 3000,
+        messages: [{ role: 'user', content: prompt }]
+      });
+      const raw = message.content[0].text.trim();
+      const text = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+      parsed = JSON.parse(text);
+      console.log(`=== OCCASION CONTENT (attempt ${attempt}) ===`);
+      console.log(JSON.stringify(parsed, null, 2));
+      console.log('=== END ===');
+      break;
+    } catch (err) {
+      lastError = err;
+      console.error(`Occasion Claude parse failed attempt ${attempt}:`, err.message);
+      if (attempt < 3) console.log('Retrying...');
+    }
+  }
+  if (!parsed) throw new Error(`Occasion Claude failed after 3 attempts: ${lastError?.message}`);
+  return parsed;
+}
+
+async function buildOccasionPDF(content, occasionData, products) {
+  const pdfPath = path.join(os.tmpdir(), `outfitify-occasion-${Date.now()}.pdf`);
+  const doc = new PDFDocument({ size: 'A4', margin: 0, autoFirstPage: true });
+  const stream = fs.createWriteStream(pdfPath);
+  doc.pipe(stream);
+
+  const BG = '#0A0A0A', HEADER = '#111111', BORDER = '#2A2520', GREEN = '#B8A898';
+  const WHITE = '#F2EDE6', GREY = '#7A6E66', MUTED = '#C8BFB5';
+  const CARD = '#141210', CARD2 = '#1C1916', RED = '#C4886A';
+  const PW = 595, PH = 842, PAD = 50, IW = 495;
+
+  function bg() { doc.rect(0, 0, PW, PH).fill(BG); }
+  function pageHeader(sub) {
+    doc.rect(0, 0, PW, 36).fill(HEADER);
+    doc.rect(0, 35, PW, 1).fill(BORDER);
+    doc.fontSize(8).fillColor(WHITE).font('Helvetica-Bold').text('OUTFITIFY', 0, 11, { width: PW, align: 'center', characterSpacing: 6 });
+    if (sub) doc.fontSize(6.5).fillColor(GREY).font('Helvetica').text(sub.toUpperCase(), 0, 22, { width: PW, align: 'center', characterSpacing: 2 });
+  }
+  function footer() {
+    doc.rect(0, PH - 28, PW, 28).fill(HEADER);
+    doc.rect(0, PH - 28, PW, 1).fill(BORDER);
+    doc.fontSize(7).fillColor(GREY).font('Helvetica').text('OUTFITIFY.CO.UK  ·  OCCASION STYLE GUIDE', 0, PH - 15, { width: PW, align: 'center', characterSpacing: 1 });
+  }
+  function lcard(x, y, w, h, accent) {
+    doc.rect(x, y, w, h).fill(CARD);
+    doc.rect(x, y, 2, h).fill(accent || GREEN);
+  }
+  function textH(str, fontSize, fontName, width) {
+    doc.fontSize(fontSize).font(fontName || 'Helvetica');
+    return doc.heightOfString(str || '', { width, lineGap: 2 });
+  }
+  function sectionLabel(text, y, color) {
+    doc.fontSize(6.5).fillColor(color || GREEN).font('Helvetica-Bold').text(text, PAD, y, { characterSpacing: 3 });
+    doc.moveTo(PAD, y + 12).lineTo(PAD + IW, y + 12).strokeColor(BORDER).lineWidth(0.5).stroke();
+  }
+
+  // ── PAGE 1 ─────────────────────────────────────────────────────────────────
+  bg();
+  doc.rect(0, 40, PW, 180).fill('#0E0C0A');
+  doc.moveTo(0, 220).lineTo(PW, 220).strokeColor(BORDER).lineWidth(0.5).stroke();
+  pageHeader('Occasion Style Guide');
+
+  // Hero
+  doc.fontSize(9).fillColor(GREEN).font('Helvetica-Bold').text('YOUR STYLIST\'S VERDICT', PAD, 56, { characterSpacing: 3 });
+  const titleParts = (content.occasionTitle || occasionData.occasionName).split(' ');
+  const mid = Math.ceil(titleParts.length / 2);
+  doc.fontSize(40).fillColor(WHITE).font('Helvetica-Bold').text(titleParts.slice(0, mid).join(' ').toUpperCase(), PAD, 76, { lineBreak: false });
+  doc.fontSize(40).fillColor(GREEN).font('Helvetica-Bold').text(titleParts.slice(mid).join(' ').toUpperCase(), PAD, 118, { lineBreak: false });
+
+  // Opening note
+  const noteH = Math.max(textH(content.openingNote || '', 10, 'Helvetica', IW - 28) + 36, 80);
+  lcard(PAD, 232, IW, noteH, GREEN);
+  doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold').text('A NOTE FROM YOUR STYLIST', PAD + 14, 242, { characterSpacing: 2 });
+  doc.fontSize(10).fillColor(MUTED).font('Helvetica').text(content.openingNote || '', PAD + 14, 258, { width: IW - 28, lineGap: 3 });
+
+  // What to wear
+  let curY = 232 + noteH + 24;
+  sectionLabel('THE OUTFIT', curY);
+  curY += 20;
+
+  const headlineH = Math.max(textH(content.whatToWear?.headline || '', 13, 'Helvetica-Bold', IW - 28) + 28, 52);
+  lcard(PAD, curY, IW, headlineH, GREEN);
+  doc.fontSize(13).fillColor(WHITE).font('Helvetica-Bold').text(content.whatToWear?.headline || '', PAD + 14, curY + 14, { width: IW - 28, lineGap: 2 });
+  curY += headlineH + 12;
+
+  const formulaText = content.whatToWear?.outfitFormula || '';
+  const formulaH = textH(formulaText, 10, 'Helvetica', IW) + 8;
+  doc.fontSize(10).fillColor(MUTED).font('Helvetica').text(formulaText, PAD, curY, { width: IW, lineGap: 4 });
+  curY += formulaH + 16;
+
+  // Fit advice
+  if (curY + 60 < PH - 80) {
+    sectionLabel('FIT ADVICE FOR YOUR BUILD', curY);
+    curY += 20;
+    const fitH = Math.max(textH(content.whatToWear?.fitAdvice || '', 9.5, 'Helvetica', IW - 28) + 28, 52);
+    lcard(PAD, curY, IW, fitH, GREEN);
+    doc.fontSize(9.5).fillColor(MUTED).font('Helvetica').text(content.whatToWear?.fitAdvice || '', PAD + 14, curY + 14, { width: IW - 28, lineGap: 3 });
+    curY += fitH + 16;
+  }
+
+  // What to avoid
+  if (curY + 60 < PH - 80) {
+    sectionLabel('WHAT TO AVOID', curY, RED);
+    curY += 20;
+    const avoidH = Math.max(textH(content.whatToAvoid || '', 9.5, 'Helvetica', IW - 28) + 28, 52);
+    lcard(PAD, curY, IW, avoidH, RED);
+    doc.fontSize(9.5).fillColor(MUTED).font('Helvetica').text(content.whatToAvoid || '', PAD + 14, curY + 14, { width: IW - 28, lineGap: 3 });
+    curY += avoidH + 16;
+  }
+
+  // Stylist tip
+  if (curY + 60 < PH - 80 && content.stylistTip) {
+    sectionLabel('STYLIST\'S INSIDER TIP', curY);
+    curY += 20;
+    const tipH = Math.max(textH(content.stylistTip, 9.5, 'Helvetica', IW - 28) + 28, 52);
+    doc.rect(PAD, curY, IW, tipH).fill(CARD2);
+    doc.rect(PAD, curY, IW, tipH).strokeColor(GREEN).lineWidth(0.5).stroke();
+    doc.fontSize(9.5).fillColor(MUTED).font('Helvetica').text(content.stylistTip, PAD + 14, curY + 14, { width: IW - 28, lineGap: 3 });
+  }
+
+  footer();
+
+  // ── PAGE 2 — PRODUCT PICKS ─────────────────────────────────────────────────
+  doc.addPage();
+  bg();
+  pageHeader('Your 3 Picks');
+
+  doc.rect(0, 40, PW, 90).fill('#0E0C0A');
+  doc.moveTo(0, 130).lineTo(PW, 130).strokeColor(BORDER).lineWidth(0.5).stroke();
+  doc.fontSize(24).fillColor(WHITE).font('Helvetica-Bold').text('3 PIECES PICKED', PAD, 52);
+  doc.fontSize(24).fillColor(GREEN).font('Helvetica-Bold').text('FOR THIS OCCASION', PAD, 80);
+  doc.fontSize(9).fillColor(GREY).font('Helvetica-Oblique').text(`Chosen for your build, your budget and ${occasionData.occasionName.toLowerCase()} — click any name to buy`, PAD, 118, { width: IW });
+
+  const pieces = (content.recommendedPieces || []).slice(0, 3);
+  const imageBuffers = await Promise.all(pieces.map(async piece => {
+    let imageUrl = null;
+    for (const catItems of Object.values(products)) {
+      const match = catItems.find(p => p['Item Name'] === piece.name);
+      if (match) { imageUrl = match['Image URL']; break; }
+    }
+    if (!imageUrl) return null;
+    try { const r = await axios.get(imageUrl, { responseType: 'arraybuffer', timeout: 5000 }); return Buffer.from(r.data); } catch { return null; }
+  }));
+
+  const CARD_H = 80, IMG_W = 68, IMG_PAD = 8;
+  let pieceY = 148;
+  for (let i = 0; i < pieces.length; i++) {
+    const piece = pieces[i];
+    if (pieceY + CARD_H > PH - 180) break;
+    const tx = PAD + IMG_PAD + IMG_W + 12, priceColX = PAD + IW - 90, textW = priceColX - tx - 8;
+    doc.rect(PAD, pieceY, IW, CARD_H).fill(CARD);
+    doc.rect(PAD, pieceY, IW, CARD_H).strokeColor(BORDER).lineWidth(0.5).stroke();
+    const imgY = pieceY + (CARD_H - IMG_W) / 2;
+    if (imageBuffers[i]) {
+      try { doc.save(); doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).clip(); doc.image(imageBuffers[i], PAD + IMG_PAD, imgY, { width: IMG_W, height: IMG_W, cover: [IMG_W, IMG_W] }); doc.restore(); }
+      catch { doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).fill(CARD2); }
+    } else { doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).fill(CARD2); }
+    let productUrl = piece.url || null;
+    if (!productUrl) { for (const catItems of Object.values(products)) { const match = catItems.find(p => p['Item Name'] === piece.name); if (match?.['Product URL']) { productUrl = match['Product URL']; break; } } }
+    doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold').text((piece.category || '').toUpperCase(), tx, pieceY + 10, { width: textW, lineBreak: false, characterSpacing: 1.5 });
+    doc.fontSize(11).fillColor(productUrl ? GREEN : WHITE).font('Helvetica-Bold').text(piece.name || '', tx, pieceY + 24, { width: textW, lineBreak: false, ...(productUrl ? { link: productUrl, underline: true } : {}) });
+    doc.fontSize(8.5).fillColor(GREY).font('Helvetica').text(piece.why || '', tx, pieceY + 42, { width: textW, lineGap: 1.5 });
+    doc.fontSize(16).fillColor(GREEN).font('Helvetica-Bold').text(piece.price || '', priceColX, pieceY + 16, { width: 88, align: 'right', lineBreak: false, ...(productUrl ? { link: productUrl } : {}) });
+    doc.fontSize(8).fillColor(GREY).font('Helvetica').text(piece.brand || '', priceColX, pieceY + 38, { width: 88, align: 'right', lineBreak: false });
+    pieceY += CARD_H + 6;
+  }
+
+  // Upsell CTA
+  const ctaY = pieceY + 24;
+  doc.rect(PAD, ctaY, IW, 130).fill(GREEN);
+  doc.fontSize(11).fillColor(BG).font('Helvetica-Bold').text('WANT YOUR COMPLETE STYLE BLUEPRINT?', PAD + 20, ctaY + 16, { width: IW - 40, align: 'center', characterSpacing: 1 });
+  doc.fontSize(13).fillColor(BG).font('Helvetica').text('Your full personal style consultation — colour guide, what suits your build, what to buy first and 5 hand-picked products. Everything in one place.', PAD + 20, ctaY + 40, { width: IW - 40, align: 'center', lineGap: 2 });
+  doc.fontSize(24).fillColor(BG).font('Helvetica-Bold').text('From £4.99', PAD + 20, ctaY + 90, { width: IW - 40, align: 'center' });
+  doc.fontSize(10).fillColor(BG).font('Helvetica').text('quiz.outfitify.co.uk', PAD + 20, ctaY + 116, { width: IW - 40, align: 'center', characterSpacing: 1 });
+
+  footer();
+  doc.end();
+
+  return new Promise((resolve, reject) => {
+    stream.on('finish', () => resolve(pdfPath));
+    stream.on('error', reject);
+  });
+}
+
+async function sendOccasionEmail(toEmail, downloadUrl, occasionName, sessionId) {
+  const emailBody = {
+    from: { address: 'outfitify@outfitify.co.uk', name: 'Outfitify' },
+    to: [{ email_address: { address: toEmail } }],
+    subject: `Your ${occasionName} Style Guide is Ready`,
+    htmlbody: `
+      <div style="background:#0A0A0A;padding:0;font-family:Arial,sans-serif;max-width:600px;margin:0 auto;border:1px solid #2A2520">
+        <div style="background:#111111;padding:28px 40px;border-bottom:1px solid #2A2520;text-align:center">
+          <p style="color:#7A6E66;font-size:10px;letter-spacing:4px;margin:0 0 4px;text-transform:uppercase">Occasion Style Guide</p>
+          <h1 style="color:#F2EDE6;font-size:14px;letter-spacing:5px;margin:0;font-weight:600">OUTFITIFY</h1>
+        </div>
+        <div style="padding:44px 40px">
+          <h2 style="color:#F2EDE6;font-size:26px;font-weight:300;margin:0 0 12px;line-height:1.2">Your ${occasionName} guide is ready.</h2>
+          <p style="color:#7A6E66;font-size:14px;line-height:1.7;margin:0 0 32px">Your personalised outfit guide has been put together based on your answers — what to wear, how it should fit your build, what to avoid, and 3 hand-picked products with links and prices.</p>
+          <a href="${downloadUrl}" style="display:block;background:#F2EDE6;color:#0A0A0A;text-align:center;padding:16px;font-size:11px;font-weight:600;letter-spacing:3px;text-decoration:none;margin:0 0 32px;text-transform:uppercase">DOWNLOAD MY STYLE GUIDE →</a>
+          <div style="background:#111111;border:1px solid #2A2520;border-left:3px solid #B8A898;padding:24px;margin:0 0 24px">
+            <p style="color:#B8A898;font-size:10px;letter-spacing:3px;font-weight:600;margin:0 0 10px;text-transform:uppercase">Want your complete style blueprint?</p>
+            <p style="color:#C8BFB5;font-size:13px;line-height:1.7;margin:0 0 16px">Your full consultation covers everything — your colours, what works for your build, what to buy first and 5 hand-picked products. Free to start, full blueprint from £4.99.</p>
+            <a href="https://quiz.outfitify.co.uk" style="display:block;background:#B8A898;color:#0A0A0A;text-align:center;padding:14px;font-size:11px;font-weight:600;letter-spacing:3px;text-decoration:none;text-transform:uppercase">GET MY FULL BLUEPRINT — FROM £4.99 →</a>
+          </div>
+          <p style="color:#4A4440;font-size:12px;text-align:center;border-top:1px solid #2A2520;padding-top:20px;margin:0">This link is unique to you. If you have any issues, reply to this email.</p>
+        </div>
+        <div style="background:#111111;border-top:1px solid #2A2520;padding:16px 40px;text-align:center">
+          <p style="color:#4A4440;font-size:10px;letter-spacing:2px;margin:0">OUTFITIFY · MAKING STYLE EFFORTLESS · OUTFITIFY.CO.UK</p>
+        </div>
+      </div>
+    `
+  };
+
+  const response = await axios.post('https://api.zeptomail.eu/v1.1/email', emailBody, {
+    headers: { 'Accept': 'application/json', 'Content-Type': 'application/json', 'Authorization': process.env.ZEPTO_SMTP_PASS }
+  });
+  console.log(`Occasion email sent to ${toEmail}:`, response.data);
+}
+
+// ── END OCCASION GUIDES ───────────────────────────────────────────────────────
+
+
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Outfitify backend running on port ${PORT}`));
