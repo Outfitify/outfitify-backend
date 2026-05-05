@@ -575,12 +575,19 @@ BRAND CHECK — no ultra-fast-fashion brands in quality-focused reports.
 OVER-BUDGET CHECK — acknowledge over-budget picks in the "why" field.
 FINAL SENSE CHECK — every pick must be consistent with the style DNA and blueprint.
 
-TONE RULES:
+TONE RULES — THIS IS THE MOST IMPORTANT SECTION:
+- Write like a real stylist talking directly to a person, not generating a report
+- Every sentence must sound like it could be said out loud by a friend who knows about clothes
 - Second person only ("you", "your")
-- Never use: "it's important to", "consider", "you might want to", "here are some tips", "great", "amazing", "awesome", "key pieces", "wardrobe staples", "elevate your look", "game changer"
+- Never use these words or phrases under any circumstances: "system", "intentional", "cohesive", "silhouette", "taper", "tapered", "aesthetic", "layering piece", "overshirt", "framework", "elevate", "curated", "palette" (say "colours" instead), "wardrobe staples", "key pieces", "game changer", "it's important to", "consider", "you might want to", "here are some tips", "great", "amazing", "awesome", "elevate your look"
+- If you must use a fashion term, explain it immediately in plain English — e.g. "a slim-straight cut (straight leg, not narrowing toward the ankle)"
+- Replace jargon with plain English: "silhouette" → "the shape of what you're wearing", "taper" → "narrowing toward the ankle", "cohesive" → "works together", "intentional" → "put together", "aesthetic" → "look", "layering piece" → "something to wear over a t-shirt"
 - Never start with "Remember" or "Note that"
-- Every sentence must be specific to this customer
-- Be direct and authoritative
+- Write section content like a stylist giving direct advice, not like a report being generated
+- The diagnosis body should read like someone who has looked at your answers and is telling you honestly what the problem is
+- The wardrobe blueprint priorities should read like "here's what I'd buy first and why" — opinionated, direct, specific
+- The "avoid" field should sound like a friend telling you to stop doing something, not a warning label
+- Be direct and specific — never vague
 
 Generate a style report with exactly this JSON structure (JSON only, no markdown, no preamble):
 {
@@ -694,7 +701,7 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
 
     // Colour palette — swatches only, no labels (mystery)
     const paletteY = 256 + introH + 20;
-    doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold').text('YOUR COLOUR PALETTE', PAD, paletteY, { characterSpacing: 3 });
+    doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold').text('YOUR COLOURS', PAD, paletteY, { characterSpacing: 3 });
     doc.moveTo(PAD, paletteY + 12).lineTo(PAD + IW, paletteY + 12).strokeColor(BORDER).lineWidth(0.5).stroke();
     const sw = 80, swGap = 16, swatchY = paletteY + 24;
     (content.colourPalette?.colours || []).slice(0, 3).forEach((hex, i) => {
@@ -705,7 +712,7 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
 
     // Diagnosis — headline only, no body
     const diagY = swatchY + sw + 36;
-    doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold').text('YOUR DIAGNOSIS', PAD, diagY, { characterSpacing: 3 });
+    doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold').text("THE PROBLEM WE'VE SPOTTED", PAD, diagY, { characterSpacing: 3 });
     doc.moveTo(PAD, diagY + 12).lineTo(PAD + IW, diagY + 12).strokeColor(BORDER).lineWidth(0.5).stroke();
     lcard(PAD, diagY + 20, IW, 60, GREEN);
     doc.fontSize(12).fillColor(WHITE).font('Helvetica-Bold').text(content.diagnosis?.headline || '', PAD + 16, diagY + 32, { width: IW - 32, lineGap: 2 });
@@ -733,7 +740,7 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
     const avoidText = content.styleDNA?.avoid || '';
     if (avoidText && curY + 80 < SAFE_BOTTOM) {
       const avoidCardH = Math.max(textH(avoidText, 9.5, 'Helvetica', IW - 28) + 28, 48);
-      doc.fontSize(6.5).fillColor(RED).font('Helvetica-Bold').text('STOP DOING THIS — FREE INSIGHT', PAD, curY, { characterSpacing: 3 });
+      doc.fontSize(6.5).fillColor(RED).font('Helvetica-Bold').text('STOP DOING THIS — ONE FREE INSIGHT', PAD, curY, { characterSpacing: 3 });
       doc.moveTo(PAD, curY + 12).lineTo(PAD + IW, curY + 12).strokeColor(BORDER).lineWidth(0.5).stroke();
       lcard(PAD, curY + 20, IW, avoidCardH, RED);
       doc.fontSize(9.5).fillColor(MUTED).font('Helvetica').text(avoidText, PAD + 14, curY + 32, { width: IW - 28, lineGap: 3 });
@@ -823,7 +830,7 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
   doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold').text('ABOUT YOUR REPORT', PAD + 14, 266, { characterSpacing: 2 });
   doc.fontSize(10).fillColor(MUTED).font('Helvetica').text(introText, PAD + 14, 282, { width: IW - 28, lineGap: 3 });
   const paletteY = 256 + introH + 20;
-  sectionLabel('YOUR COLOUR PALETTE', paletteY);
+  sectionLabel('YOUR COLOURS', paletteY);
   const sw = 58, swGap = 10, swatchY = paletteY + 20;
   (content.colourPalette?.colours || []).forEach((hex, i) => {
     const x = PAD + i * (sw + swGap);
@@ -835,7 +842,7 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
   const rationaleH = textH(content.colourPalette?.rationale || '', 9.5, 'Helvetica', IW);
   const insideY = rationaleY + rationaleH + 24;
   sectionLabel("WHAT'S INSIDE", insideY);
-  [["Why You've Been Getting It Wrong", 'Your personal style diagnosis'], ['Your Style DNA', 'Silhouette, fit, fabrics & colour'], ['Your Wardrobe Blueprint', '5 priorities & what to buy first'], ['Recommended Pieces', 'Hand-picked for your style & budget']].forEach(([title, desc], i) => {
+  [["Why It's Not Working", 'The real reason — specific to your answers'], ['Your Style DNA', 'What to wear, how it should fit and what to avoid'], ['What To Buy First', '5 priorities in order — your stylist\'s sequence'], ['Your Personal Edit', 'Hand-picked pieces with clickable links and prices']].forEach(([title, desc], i) => {
     const col = i % 2, row = Math.floor(i / 2), cardW = (IW - 10) / 2;
     const x = PAD + col * (cardW + 10), y = insideY + 18 + row * 54;
     doc.rect(x, y, cardW, 46).fill(CARD2); doc.rect(x, y, 2, 46).fill(GREEN);
@@ -844,8 +851,8 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
   });
   footer();
 
-  doc.addPage(); bg(); pageHeader("Why You've Been Getting It Wrong");
-  heroBlock("WHY YOU'VE BEEN", "GETTING IT WRONG");
+  doc.addPage(); bg(); pageHeader("Why It's Not Working");
+  heroBlock("WHY IT'S", "NOT WORKING");
   lcard(PAD, 144, IW, 52, GREEN);
   doc.fontSize(13).fillColor(WHITE).font('Helvetica-Bold').text(content.diagnosis?.headline || '', PAD + 16, 158, { width: IW - 32, lineGap: 2 });
   const diagBodyH = textH(content.diagnosis?.body || '', 10.5, 'Helvetica', IW) + 8;
@@ -858,7 +865,7 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
   doc.addPage(); bg(); pageHeader('Your Style DNA');
   heroBlock('YOUR', 'STYLE DNA');
   let dnaY = 144;
-  [['SILHOUETTE', content.styleDNA?.silhouette || '', GREEN], ['FIT LANGUAGE', content.styleDNA?.fitLanguage || '', GREEN], ['FABRICS', content.styleDNA?.fabrics || '', GREEN], ['COLOUR USAGE', content.styleDNA?.colourUsage || '', GREEN], ['STOP WEARING', content.styleDNA?.avoid || '', RED]].forEach(([label, text, accent]) => {
+  [['THE SHAPE THAT WORKS FOR YOU', content.styleDNA?.silhouette || '', GREEN], ['HOW THINGS SHOULD FIT', content.styleDNA?.fitLanguage || '', GREEN], ['FABRICS WORTH SPENDING ON', content.styleDNA?.fabrics || '', GREEN], ['HOW TO USE YOUR COLOURS', content.styleDNA?.colourUsage || '', GREEN], ['STOP DOING THIS', content.styleDNA?.avoid || '', RED]].forEach(([label, text, accent]) => {
     const h = Math.max(textH(text, 9.5, 'Helvetica', IW - 28) + 32, 52);
     if (dnaY + h > PH - 40) return;
     lcard(PAD, dnaY, IW, h, accent);
@@ -868,8 +875,8 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
   });
   footer();
 
-  doc.addPage(); bg(); pageHeader('Your Wardrobe Blueprint');
-  heroBlock('YOUR WARDROBE', 'BLUEPRINT');
+  doc.addPage(); bg(); pageHeader('What To Buy First');
+  heroBlock('WHAT TO', 'BUY FIRST');
   doc.fontSize(10).fillColor(GREY).font('Helvetica-Oblique').text(content.wardrobeBlueprint?.headline || '', PAD, 144, { width: IW });
   let bpY = 168;
   (content.wardrobeBlueprint?.priorities || []).forEach((p) => {
@@ -887,14 +894,14 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
   });
   const neverY = Math.min(bpY + 8, PH - 100);
   doc.rect(PAD, neverY, IW, 1).fill(RED);
-  doc.fontSize(7).fillColor(RED).font('Helvetica-Bold').text('NEVER BUY AGAIN', PAD, neverY + 10, { characterSpacing: 2 });
+  doc.fontSize(7).fillColor(RED).font('Helvetica-Bold').text('GET RID OF THESE NOW', PAD, neverY + 10, { characterSpacing: 2 });
   doc.fontSize(9.5).fillColor(MUTED).font('Helvetica').text(content.wardrobeBlueprint?.neverBuyAgain || '', PAD, neverY + 24, { width: IW, lineGap: 3 });
   footer();
 
   doc.addPage(); bg();
   const pieces = (content.recommendedPieces || []).slice(0, 9);
-  pageHeader('Your Recommended Pieces');
-  heroBlock(`${pieces.length} PIECES BUILT`, 'AROUND YOU', 'Hand-picked from our database to match your style DNA and budget');
+  pageHeader('Your Personal Edit');
+  heroBlock(`${pieces.length} PIECES PICKED`, 'FOR YOU', 'Every piece chosen for your build, your colours and your budget — click any name to buy');
   const imageBuffers = await Promise.all(pieces.map(async piece => {
     let imageUrl = null;
     for (const catItems of Object.values(products)) {
@@ -930,8 +937,8 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
   footer();
 
   if (tier === 'premium') {
-    doc.addPage(); bg(); pageHeader('Where To Invest');
-    heroBlock('WHERE TO', 'INVEST', 'Brands suited to your goal and budget');
+    doc.addPage(); bg(); pageHeader('Where To Spend Your Money');
+    heroBlock('WHERE TO', 'SPEND YOUR MONEY', 'Four brands that deliver for your look and budget — shop these before anywhere else');
     const shopItems = (content.whereToInvest || []).slice(0, 4);
     const shopColW = (IW - 12) / 2;
     const shopHeights = shopItems.map(s => Math.max(textH(s.why || '', 9, 'Helvetica', shopColW - 28) + textH(`Best for: ${s.bestFor || ''}`, 8, 'Helvetica-Oblique', shopColW - 28) + 80, 100));
