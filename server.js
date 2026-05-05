@@ -1024,7 +1024,8 @@ async function sendEmail(toEmail, downloadUrl, styleIdentityName, tier = 'standa
           <a href="${upgradeUrl}&tier=premium&sid=${sessionId}" style="display:inline-block;background:#0A0A0A;color:#F2EDE6;text-align:center;padding:14px 32px;font-size:11px;font-weight:600;letter-spacing:3px;text-decoration:none;text-transform:uppercase">GET PREMIUM FOR £4.99 — 2 HRS ONLY →</a>
         </div>
         <div style="background:#111111;border:1px solid #2A2520;padding:16px 24px;margin:0 0 24px;text-align:center">
-          <p style="color:#4A4440;font-size:11px;margin:0">After 2 hours, Premium is available at <span style="color:#B8A898">£9.99</span> · Standard at <span style="color:#B8A898">£4.99</span></p>
+          <p style="color:#4A4440;font-size:11px;margin:0 0 8px;">After 2 hours, Premium is available at <span style="color:#B8A898">£9.99</span> · Standard at <span style="color:#B8A898">£4.99</span></p>
+          <p style="color:#4A4440;font-size:11px;margin:0">Got a specific event coming up? <a href="https://occasions.outfitify.co.uk" style="color:#B8A898;text-decoration:none;">Occasion guides from £2.49 →</a></p>
         </div>`,
     },
     standard: {
