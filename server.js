@@ -1179,6 +1179,47 @@ TONE RULES — CRITICAL:
 - Every sentence must be specific to this person's occasion, build and budget
 - Short punchy sentences — no waffle
 
+STRICT PRODUCT RULES BY OCCASION — YOU MUST FOLLOW THESE:
+
+DATE NIGHT:
+- NO sportswear, gym wear, hoodies, joggers or trainers unless they are clean minimal court shoes
+- YES to chinos, smart trousers, dark jeans, clean shirts, smart casual tops
+- Shoes must be clean and considered — leather shoes, loafers or minimal clean trainers only
+
+JOB INTERVIEW:
+- NO trainers unless the industry is explicitly creative/startup
+- NO casual t-shirts, hoodies, joggers or sportswear under any circumstances
+- YES to smart trousers, chinos, shirts, smart casual jackets, formal shoes or clean minimal leather shoes
+- Everything must look sharp and deliberate
+
+FESTIVAL / SUMMER:
+- NO joggers, formal trousers, heavy denim, thick knitwear, suits or formal shoes
+- NO dark heavy fabrics — avoid black thick cotton, wool, heavyweight items
+- YES to shorts, linen trousers, lightweight t-shirts, light overshirts, trainers, canvas shoes, sandals
+- Fabrics must be lightweight — linen, lightweight cotton, jersey
+- If no suitable summer product exists in the list, say so in the why field and suggest what to look for instead
+
+SMART CASUAL WORK:
+- NO sportswear, gym wear, hoodies or joggers
+- YES to chinos, smart trousers, shirts, smart casual jackets, clean shoes
+- Nothing too formal, nothing too casual
+
+WEDDING GUEST:
+- NO sportswear, trainers, casual t-shirts, hoodies or joggers
+- YES to suits, smart trousers, dress shirts, smart shoes, loafers
+- Must be occasion-appropriate — smart and considered
+
+HOLIDAY / TRAVEL:
+- NO formal trousers, suits, heavy fabrics or formal shoes
+- YES to lightweight trousers, shorts, t-shirts, lightweight shirts, trainers, sandals, canvas shoes
+- Practical and comfortable but still looks good
+
+GENERAL PRODUCT RULES:
+- If a product doesn't suit the occasion, DO NOT recommend it even if it's the only option in that category
+- It is better to recommend 2 excellent products than 3 where one is wrong
+- Never recommend joggers for any occasion except possibly a very casual festival or summer context
+- Always check: would a real stylist actually suggest this for this specific occasion?
+
 Generate JSON only, no markdown:
 {
   "occasionTitle": "Short punchy title for this occasion e.g. 'Your Date Night Look'",
@@ -1202,14 +1243,15 @@ Generate JSON only, no markdown:
   ]
 }
 
-Pick exactly 3 products from this list that work best for this occasion:
+Pick the best 2-3 products from this list that genuinely suit this occasion. If fewer than 3 suitable products exist, only recommend the ones that are actually appropriate — quality over quantity:
 ${JSON.stringify(productSummary, null, 2)}
 
 Rules:
 - JSON only, no markdown
-- recommendedPieces: exactly 3 items
+- recommendedPieces: 2-3 items maximum — only include products that genuinely suit the occasion
 - Every field must be specific to the occasion and their answers
-- Never sound like AI generated this`;
+- Never sound like AI generated this
+- If a product doesn't fit the occasion rules above, do not include it`;
 
   let parsed = null;
   let lastError = null;
