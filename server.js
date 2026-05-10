@@ -6,7 +6,6 @@ const Anthropic = require('@anthropic-ai/sdk');
 const { google } = require('googleapis');
 const PDFDocument = require('pdfkit');
 const axios = require('axios');
-const nodemailer = require('nodemailer');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -35,14 +34,14 @@ app.use(cors({
     'https://occasions.outfitify.co.uk',
     'https://chipper-fairy-2f755d.netlify.app',
     /\.netlify\.app$/,
-    'http://localhost:3000'
-  ]
+    'http://localhost:3000',
+  ],
 }));
 
 app.use('/webhook', express.raw({ type: 'application/json' }));
 app.use(express.json());
 
-const sessions = new Map();
+// ── SESSION / FILE HELPERS ────────────────────────────────────────────────────
 
 const DOWNLOADS_DIR = path.join(os.tmpdir(), 'outfitify-downloads');
 if (!fs.existsSync(DOWNLOADS_DIR)) fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
@@ -82,162 +81,116 @@ function getFreeSession(sessionId) {
   } catch { return null; }
 }
 
-app.post('/api/save-session', (req, res) => {
-  const { budget, struggles, lifestyle, goal, fit } = req.body;
-  if (!budget) return res.status(400).json({ error: 'Missing required fields' });
-  const sessionId = crypto.randomBytes(16).toString('hex');
-  sessions.set(sessionId, { budget, struggles, lifestyle, goal, fit, createdAt: Date.now() });
-  for (const [id, data] of sessions.entries()) {
-    if (Date.now() - data.createdAt > 7200000) sessions.delete(id);
+// ── FETCH PRODUCTS (v2) ───────────────────────────────────────────────────────
+// Sheet columns (A-J): Category | Item Name | Brand | Price | Product URL | Image URL | Occasion | Budget | Fit | Season
+// Occasion field supports comma-separated values e.g. "Date Night, Night Out"
+// A product tagged "Date Night, Night Out" appears in the pool for BOTH occasions
+
+async function fetchOccasionProducts(occasion, budget, fit) {
+  const auth = new google.auth.GoogleAuth({
+    credentials: JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON),
+    scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+  });
+  const sheets = google.sheets({ version: 'v4', auth });
+  const response = await sheets.spreadsheets.values.get({
+    spreadsheetId: process.env.GOOGLE_SHEET_ID,
+    range: 'Sheet1!A:J',
+  });
+
+  const rows = response.data.values;
+  if (!rows || rows.length < 2) throw new Error('No product data in sheet');
+
+  const headers = rows[0];
+  const allProducts = rows.slice(1)
+    .map(row => {
+      const obj = {};
+      headers.forEach((h, i) => obj[h] = (row[i] || '').trim());
+      return obj;
+    })
+    .filter(p => p['Item Name']);
+
+  console.log(`[fetchOccasionProducts] Total: ${allProducts.length} | occasion=${occasion} budget=${budget} fit=${fit}`);
+
+  // Map budget answer → tier
+  function budgetToTier(b) {
+    if (!b) return 'Budget';
+    const bl = b.toLowerCase();
+    if (bl.includes('under') || (bl.includes('30') && !bl.includes('60'))) return 'Budget';
+    if (bl.includes('100+') || bl.includes('premium')) return 'Premium';
+    return 'Mid';
   }
-  res.json({ sessionId });
-});
 
-async function addToMailchimp(email, quizData, tier = 'free') {
-  const apiKey = process.env.MAILCHIMP_API_KEY;
-  const audienceId = process.env.MAILCHIMP_AUDIENCE_ID;
-  const server = process.env.MAILCHIMP_SERVER || 'us18';
+  // Map fit answer → tier
+  function fitToTier(f) {
+    if (!f) return 'Regular';
+    const fl = f.toLowerCase();
+    if (fl.includes('slim') || fl.includes('lean') || fl.includes('athletic') || fl.includes('muscular')) return 'Slim';
+    if (fl.includes('bigger') || fl.includes('broader')) return 'Regular';
+    return 'Regular';
+  }
 
-  if (!apiKey || !audienceId) { console.log('Mailchimp not configured — skipping'); return; }
+  const budgetTier = budgetToTier(budget);
+  const fitTier = fitToTier(fit);
+  console.log(`[fetchOccasionProducts] budgetTier=${budgetTier} fitTier=${fitTier}`);
 
-  const tag = tier === 'premium' ? 'premium-customer' : tier === 'standard' ? 'standard-customer' : 'free-tier';
+  // Occasion: check each comma-separated value against target
+  function matchesOccasion(product, target) {
+    return (product['Occasion'] || '')
+      .split(',')
+      .map(o => o.trim().toLowerCase())
+      .some(o => o === target.toLowerCase());
+  }
 
-  try {
-    const response = await axios.post(
-      `https://${server}.api.mailchimp.com/3.0/lists/${audienceId}/members`,
-      {
-        email_address: email,
-        status: 'subscribed',
-        merge_fields: {
-          BUDGET: quizData.budget || '',
-          LIFESTYLE: quizData.lifestyle || '',
-          GOAL: quizData.goal || '',
-          FIT: quizData.fit || '',
-          STRUGGLES: quizData.struggles || '',
-          SID: quizData.sessionId || '',
-        },
-        tags: [tag],
-      },
-      { auth: { username: 'anystring', password: apiKey }, headers: { 'Content-Type': 'application/json' }, validateStatus: (s) => s < 500 }
-    );
-    if (response.status === 200 || response.status === 204) {
-      console.log(`Mailchimp: added ${email} with tag [${tag}]`);
-    } else if (response.data?.title === 'Member Exists') {
-      console.log(`Mailchimp: ${email} already subscribed — updating tag to [${tag}]`);
-      const emailHash = crypto.createHash('md5').update(email.toLowerCase()).digest('hex');
-      await axios.post(
-        `https://${server}.api.mailchimp.com/3.0/lists/${audienceId}/members/${emailHash}/tags`,
-        { tags: [{ name: tag, status: 'active' }] },
-        { auth: { username: 'anystring', password: apiKey } }
-      );
-    } else {
-      console.error(`Mailchimp error: ${response.status}`, response.data?.detail || response.data?.title);
-    }
-  } catch (err) { console.error('Mailchimp request failed:', err.message); }
+  // Fit: "All" matches any build
+  function matchesFit(product, target) {
+    const pf = (product['Fit'] || '').trim().toLowerCase();
+    return pf === 'all' || pf === target.toLowerCase();
+  }
+
+  // Budget cascade: exact → adjacent → any
+  const BUDGET_ORDER = ['Budget', 'Mid', 'Premium'];
+  function budgetCascade(pool, tier) {
+    const idx = BUDGET_ORDER.indexOf(tier);
+    let result = pool.filter(p => (p['Budget'] || '').trim() === tier);
+    if (result.length >= 2) return result;
+    const adjacent = [BUDGET_ORDER[idx - 1], BUDGET_ORDER[idx + 1]].filter(Boolean);
+    result = pool.filter(p => {
+      const pb = (p['Budget'] || '').trim();
+      return pb === tier || adjacent.includes(pb);
+    });
+    if (result.length >= 2) return result;
+    return pool; // any
+  }
+
+  const CATEGORIES = ['Top', 'Bottoms', 'Shoes', 'Jacket', 'Hoodie/Jacket', 'Accessory'];
+  const selected = {};
+
+  const occasionFitPool  = allProducts.filter(p => matchesOccasion(p, occasion) && matchesFit(p, fitTier));
+  const occasionOnlyPool = allProducts.filter(p => matchesOccasion(p, occasion));
+
+  CATEGORIES.forEach(cat => {
+    // Prefer occasion+fit filtered pool; fall back to occasion-only if thin
+    let pool = occasionFitPool.filter(p => p['Category'] === cat);
+    if (pool.length < 2) pool = occasionOnlyPool.filter(p => p['Category'] === cat);
+
+    const budgeted = budgetCascade(pool, budgetTier);
+    selected[cat] = budgeted.sort(() => Math.random() - 0.5).slice(0, 6);
+    console.log(`[fetchOccasionProducts] ${cat}: ${selected[cat].length} products`);
+  });
+
+  return selected;
 }
 
-app.post('/api/free-report', async (req, res) => {
-  const { budget, struggles, lifestyle, goal, fit, email } = req.body;
-  if (!budget || !email) return res.status(400).json({ error: 'Missing required fields' });
+// ── OCCASION CHECKOUT ─────────────────────────────────────────────────────────
+
+app.post('/api/create-occasion-checkout', async (req, res) => {
+  const { occasion, occasionName, budget, fit, occasionDetail, occasionDetail2, style, email } = req.body;
+  if (!occasion || !email) return res.status(400).json({ error: 'Missing required fields' });
+
   const sessionId = crypto.randomBytes(16).toString('hex');
-  const quizData = { budget, struggles, lifestyle, goal, fit, sessionId };
-  saveFreeSession(sessionId, { ...quizData, email, createdAt: Date.now() });
-  res.json({ success: true, sessionId });
-  addToMailchimp(email, quizData).catch(err => console.error('Mailchimp failed:', err));
-  generateAndStoreReport(sessionId, quizData, email, 'free').catch(err => {
-    console.error(`Free report generation failed for ${sessionId}:`, err);
-  });
-});
+  saveFreeSession(`occ_${sessionId}`, { occasion, occasionName, budget, fit, occasionDetail, occasionDetail2, style, email, createdAt: Date.now() });
 
-// CREATE CHECKOUT DIRECT — accepts quiz answers in body, no session lookup needed
-// Used by email upgrade links so answers come from Mailchimp merge fields
-app.post('/api/create-checkout-direct', async (req, res) => {
-  const { budget, struggles, lifestyle, goal, fit, tier, sid } = req.body;
-  if (!budget) return res.status(400).json({ error: 'Missing required fields' });
-
-  const resolvedTier = tier || 'standard';
-  console.log(`Creating direct ${resolvedTier} checkout from email upgrade link`);
-
-  // Check 2-hour Premium offer window using original free session ID
-  const TWO_HOURS = 2 * 60 * 60 * 1000;
-  let applyPremiumOffer = false;
-  if (resolvedTier === 'premium' && sid) {
-    const freeSession = getFreeSession(sid);
-    if (freeSession && (Date.now() - freeSession.createdAt) < TWO_HOURS) {
-      applyPremiumOffer = true;
-      console.log(`2-hour Premium offer valid for session ${sid} — applying UPGRADE coupon`);
-    } else {
-      console.log(`2-hour Premium offer expired for session ${sid} — charging full £9.99`);
-    }
-  }
-
-  // Create a fresh session so the report can be generated after payment
-  const sessionId = crypto.randomBytes(16).toString('hex');
-  sessions.set(sessionId, { budget, struggles, lifestyle, goal, fit, createdAt: Date.now() });
-
-  const tierConfig = {
-    standard: { amount: 499, name: 'Outfitify Personal Style Blueprint — Standard' },
-    premium:  { amount: 999, name: 'Outfitify Personal Style Blueprint — Premium' },
-  };
-  const config = tierConfig[resolvedTier] || tierConfig.standard;
-
-  try {
-    const checkoutOptions = {
-      payment_method_types: ['card'],
-      customer_creation: 'always',
-      allow_promotion_codes: true,
-      line_items: [{
-        price_data: {
-          currency: 'gbp',
-          product_data: {
-            name: applyPremiumOffer ? 'Outfitify Personal Style Blueprint — Premium (2-Hour Offer)' : config.name,
-            description: 'Your personalised style diagnosis, blueprint, wardrobe formula and outfit examples — built around you.',
-            images: ['https://outfitify.co.uk/assets/images/image04.png']
-          },
-          unit_amount: config.amount
-        },
-        quantity: 1
-      }],
-      mode: 'payment',
-      success_url: `${process.env.SUCCESS_URL || 'https://success.outfitify.co.uk'}?token={CHECKOUT_SESSION_ID}&sid=${sessionId}`,
-      cancel_url: `https://unlock.outfitify.co.uk?cancelled=true`,
-      metadata: {
-        sessionId,
-        tier: resolvedTier,
-        budget:    budget    || '',
-        struggles: struggles || '',
-        lifestyle: lifestyle || '',
-        goal:      goal      || '',
-        fit:       fit       || '',
-      },
-    };
-
-    // Auto-apply UPGRADE coupon for valid 2-hour Premium offer
-    if (applyPremiumOffer) {
-      checkoutOptions.discounts = [{ coupon: 'UPGRADE' }];
-      checkoutOptions.allow_promotion_codes = false;
-    }
-
-    const checkoutSession = await stripe.checkout.sessions.create(checkoutOptions);
-    res.json({ url: checkoutSession.url });
-  } catch (err) {
-    console.error('Direct checkout error:', err);
-    res.status(500).json({ error: 'Payment setup failed' });
-  }
-});
-
-app.post('/api/create-checkout', async (req, res) => {
-  const { sessionId, tier } = req.body;
-  const resolvedTier = tier || 'standard';
-  console.log(`Creating ${resolvedTier} checkout for session ${sessionId}`);
-  const quizData = sessions.get(sessionId) || getFreeSession(sessionId);
-  if (!quizData) return res.status(400).json({ error: 'Session not found or expired' });
-
-  const tierConfig = {
-    standard: { amount: 499, name: 'Outfitify Personal Style Blueprint — Standard' },
-    premium:  { amount: 999, name: 'Outfitify Personal Style Blueprint — Premium' },
-  };
-  const config = tierConfig[resolvedTier] || tierConfig.standard;
+  console.log(`Occasion checkout: ${occasion}, session ${sessionId}`);
 
   try {
     const checkoutSession = await stripe.checkout.sessions.create({
@@ -248,29 +201,88 @@ app.post('/api/create-checkout', async (req, res) => {
         price_data: {
           currency: 'gbp',
           product_data: {
-            name: config.name,
-            description: 'Your personalised style diagnosis, blueprint, wardrobe formula and outfit examples — built around you.',
-            images: ['https://outfitify.co.uk/assets/images/image04.png']
+            name: `Outfitify — ${occasionName} Style Guide`,
+            description: `Your personalised outfit guide for ${occasionName} — built around your build, budget and style.`,
+            images: ['https://outfitify.co.uk/assets/images/image04.png'],
           },
-          unit_amount: config.amount
+          unit_amount: 249,
         },
-        quantity: 1
+        quantity: 1,
       }],
       mode: 'payment',
-      success_url: `${process.env.SUCCESS_URL || "https://success.outfitify.co.uk"}?token={CHECKOUT_SESSION_ID}&sid=${sessionId}`,
-      cancel_url: `${process.env.UNLOCK_PAGE_URL || "https://quiz.outfitify.co.uk"}?cancelled=true`,
+      success_url: `${process.env.SUCCESS_URL || 'https://success.outfitify.co.uk'}?token={CHECKOUT_SESSION_ID}&sid=${sessionId}&occasion=true`,
+      cancel_url: 'https://occasions.outfitify.co.uk',
       metadata: {
-        sessionId, tier: resolvedTier,
-        budget: quizData.budget || '', struggles: quizData.struggles || '',
-        lifestyle: quizData.lifestyle || '', goal: quizData.goal || '', fit: quizData.fit || '',
+        sessionId, tier: 'occasion', occasion, occasionName,
+        budget: budget || '', fit: fit || '',
+        occasionDetail: occasionDetail || '',
+        occasionDetail2: occasionDetail2 || '',
+        style: style || '', email,
       },
     });
     res.json({ url: checkoutSession.url });
   } catch (err) {
-    console.error('Stripe error:', err);
+    console.error('Occasion checkout error:', err);
     res.status(500).json({ error: 'Payment setup failed' });
   }
 });
+
+// ── BUNDLE CHECKOUT ───────────────────────────────────────────────────────────
+
+app.post('/api/create-bundle-checkout', async (req, res) => {
+  const { occasions, bundleSize, budget, fit, occasionDetail, occasionDetail2, style, email } = req.body;
+  if (!occasions || !Array.isArray(occasions) || occasions.length < 2 || !email) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+
+  const size = Math.min(Math.max(parseInt(bundleSize) || occasions.length, 2), 3);
+  const priceMap  = { 2: 399, 3: 499 };
+  const labelMap  = { 2: '2-Guide Bundle', 3: '3-Guide Bundle' };
+  const unitAmount = priceMap[size] || 399;
+  const occasionNames = occasions.map(o => o.name || o.slug).join(', ');
+
+  const sessionId = crypto.randomBytes(16).toString('hex');
+  saveFreeSession(`bundle_${sessionId}`, { occasions, bundleSize: size, budget, fit, occasionDetail, occasionDetail2, style, email, createdAt: Date.now() });
+
+  console.log(`Bundle checkout: ${size} guides (${occasionNames}), session ${sessionId}`);
+
+  try {
+    const checkoutSession = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      customer_creation: 'always',
+      allow_promotion_codes: true,
+      line_items: [{
+        price_data: {
+          currency: 'gbp',
+          product_data: {
+            name: `Outfitify — ${labelMap[size]}: ${occasionNames}`,
+            description: `${size} personalised occasion style guides — built around your build, budget and style.`,
+            images: ['https://outfitify.co.uk/assets/images/image04.png'],
+          },
+          unit_amount: unitAmount,
+        },
+        quantity: 1,
+      }],
+      mode: 'payment',
+      success_url: `${process.env.SUCCESS_URL || 'https://success.outfitify.co.uk'}?token={CHECKOUT_SESSION_ID}&sid=${sessionId}&bundle=true`,
+      cancel_url: 'https://occasions.outfitify.co.uk',
+      metadata: {
+        sessionId, tier: 'bundle', bundleSize: String(size),
+        occasions: JSON.stringify(occasions),
+        budget: budget || '', fit: fit || '',
+        occasionDetail: occasionDetail || '',
+        occasionDetail2: occasionDetail2 || '',
+        style: style || '', email,
+      },
+    });
+    res.json({ url: checkoutSession.url });
+  } catch (err) {
+    console.error('Bundle checkout error:', err);
+    res.status(500).json({ error: 'Payment setup failed' });
+  }
+});
+
+// ── WEBHOOK ───────────────────────────────────────────────────────────────────
 
 app.post('/webhook', async (req, res) => {
   const sig = req.headers['stripe-signature'];
@@ -281,37 +293,55 @@ app.post('/webhook', async (req, res) => {
     console.error('Webhook signature failed:', err.message);
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
+
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
     const sessionId = session.metadata.sessionId;
     const userEmail = session.customer_email || session.customer_details?.email || session.metadata.email || null;
-    console.log(`Webhook received for session ${sessionId}, email: ${userEmail}`);
-    if (!userEmail) console.error(`No email found for session ${sessionId} — cannot send report`);
-    const quizData = {
-      budget: session.metadata.budget, struggles: session.metadata.struggles,
-      lifestyle: session.metadata.lifestyle, goal: session.metadata.goal, fit: session.metadata.fit,
-    };
-    const tier = session.metadata.tier || 'standard';
-    if (tier === 'occasion') {
-      const occasionData = {
-        occasion: session.metadata.occasion,
-        occasionName: session.metadata.occasionName,
-        budget: session.metadata.budget,
-        fit: session.metadata.fit,
-        occasionDetail: session.metadata.occasionDetail,
-        style: session.metadata.style,
-      };
-      generateOccasionReport(sessionId, occasionData, userEmail).catch(err => {
-        console.error(`Unhandled error in generateOccasionReport for ${sessionId}:`, err);
-      });
+    const tier = session.metadata.tier || 'occasion';
+
+    console.log(`Webhook: tier=${tier} session=${sessionId} email=${userEmail}`);
+    if (!userEmail) console.error(`No email for session ${sessionId}`);
+
+    if (tier === 'bundle') {
+      let occasions = [];
+      try { occasions = JSON.parse(session.metadata.occasions || '[]'); } catch { /* skip */ }
+      generateBundleReports(sessionId, {
+        occasions,
+        budget:          session.metadata.budget,
+        fit:             session.metadata.fit,
+        occasionDetail:  session.metadata.occasionDetail,
+        occasionDetail2: session.metadata.occasionDetail2,
+        style:           session.metadata.style,
+      }, userEmail).catch(err => console.error(`Bundle error ${sessionId}:`, err));
+
+    } else if (tier === 'occasion') {
+      generateOccasionReport(sessionId, {
+        occasion:        session.metadata.occasion,
+        occasionName:    session.metadata.occasionName,
+        budget:          session.metadata.budget,
+        fit:             session.metadata.fit,
+        occasionDetail:  session.metadata.occasionDetail,
+        occasionDetail2: session.metadata.occasionDetail2,
+        style:           session.metadata.style,
+      }, userEmail).catch(err => console.error(`Occasion error ${sessionId}:`, err));
+
     } else {
-      generateAndStoreReport(sessionId, quizData, userEmail, tier).catch(err => {
-        console.error(`Unhandled error in generateAndStoreReport for ${sessionId}:`, err);
-      });
+      // Legacy style blueprint
+      generateAndStoreReport(sessionId, {
+        budget:    session.metadata.budget,
+        struggles: session.metadata.struggles,
+        lifestyle: session.metadata.lifestyle,
+        goal:      session.metadata.goal,
+        fit:       session.metadata.fit,
+      }, userEmail, tier).catch(err => console.error(`Blueprint error ${sessionId}:`, err));
     }
   }
+
   res.json({ received: true });
 });
+
+// ── DOWNLOAD / STATUS ─────────────────────────────────────────────────────────
 
 app.get('/api/report-status/:sessionId', (req, res) => {
   const dl = getDownload(req.params.sessionId);
@@ -324,46 +354,569 @@ app.get('/api/download/:token', (req, res) => {
   if (data) {
     if (!fs.existsSync(data.pdfPath)) return res.status(404).json({ error: 'File not found' });
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="Outfitify-Style-Report.pdf"`);
+    res.setHeader('Content-Disposition', 'attachment; filename="Outfitify-Style-Guide.pdf"');
     return fs.createReadStream(data.pdfPath).pipe(res);
   }
   res.status(404).json({ error: 'Download link not found or expired' });
+});
+
+// ── GENERATE SINGLE OCCASION REPORT ──────────────────────────────────────────
+
+async function generateOccasionReport(sessionId, occasionData, userEmail) {
+  activeJobs++;
+  console.log(`Generating occasion report: ${occasionData.occasion} session=${sessionId} (active=${activeJobs})`);
+  try {
+    const products = await fetchOccasionProducts(occasionData.occasion, occasionData.budget, occasionData.fit);
+    const reportContent = await generateOccasionContent(occasionData, products);
+    const pdfPath = await buildOccasionPDF(reportContent, occasionData, products);
+    const token = crypto.randomBytes(32).toString('hex');
+    saveDownload(sessionId, { token, pdfPath, email: userEmail, quizData: occasionData, tier: 'occasion', createdAt: Date.now() });
+    const downloadUrl = `${process.env.BASE_URL}/api/download/${token}`;
+    await sendOccasionEmail(userEmail, downloadUrl, occasionData.occasionName, sessionId);
+    console.log(`Occasion report ready: ${sessionId}`);
+  } catch (err) {
+    console.error(`Occasion report failed ${sessionId}:`, err);
+  } finally {
+    activeJobs--;
+    console.log(`Job done ${sessionId}. Active: ${activeJobs}`);
+  }
+}
+
+// ── GENERATE BUNDLE REPORTS ───────────────────────────────────────────────────
+
+async function generateBundleReports(sessionId, bundleData, userEmail) {
+  activeJobs++;
+  const { occasions, budget, fit, occasionDetail, occasionDetail2, style } = bundleData;
+  console.log(`Generating bundle: ${occasions.length} guides, session=${sessionId} (active=${activeJobs})`);
+
+  const results = [];
+
+  for (const occ of occasions) {
+    const occasionData = { occasion: occ.slug, occasionName: occ.name, budget, fit, occasionDetail, occasionDetail2, style };
+    try {
+      console.log(`Bundle: generating ${occ.name}...`);
+      const products = await fetchOccasionProducts(occ.slug, budget, fit);
+      const reportContent = await generateOccasionContent(occasionData, products);
+      const pdfPath = await buildOccasionPDF(reportContent, occasionData, products);
+      const token = crypto.randomBytes(32).toString('hex');
+      const subSessionId = `${sessionId}_${occ.slug}`;
+      saveDownload(subSessionId, { token, pdfPath, email: userEmail, quizData: occasionData, tier: 'bundle', createdAt: Date.now() });
+      const downloadUrl = `${process.env.BASE_URL}/api/download/${token}`;
+      results.push({ occasionName: occ.name, downloadUrl, success: true });
+      console.log(`Bundle: ${occ.name} done`);
+    } catch (err) {
+      console.error(`Bundle: ${occ.name} failed:`, err.message);
+      results.push({ occasionName: occ.name, downloadUrl: null, success: false });
+    }
+  }
+
+  // Store bundle index on main sessionId
+  saveDownload(sessionId, { token: crypto.randomBytes(32).toString('hex'), bundle: true, results, email: userEmail, createdAt: Date.now() });
+
+  const successful = results.filter(r => r.success);
+  if (successful.length > 0) await sendBundleEmail(userEmail, successful, sessionId);
+
+  activeJobs--;
+  console.log(`Bundle complete ${sessionId}: ${successful.length}/${occasions.length} succeeded. Active: ${activeJobs}`);
+}
+
+// ── CLAUDE: GENERATE OCCASION CONTENT ────────────────────────────────────────
+
+async function generateOccasionContent(occasionData, products) {
+  const productList = [];
+  for (const [cat, items] of Object.entries(products)) {
+    items.forEach(p => productList.push({
+      category: cat,
+      name:     p['Item Name'],
+      brand:    p['Brand'],
+      price:    `£${p['Price']}`,
+      url:      p['Product URL'],
+    }));
+  }
+
+  const occasionRules = {
+    'date-night': `
+DATE NIGHT RULES:
+- NO sportswear, gym wear, hoodies, joggers or casual trainers
+- NO graphic tees or logo-heavy pieces
+- Shoes must be clean and considered — leather shoes, loafers or clean minimal court trainers only
+- Smart casual minimum — chinos, dark jeans, clean shirts, quality basics
+- occasionDetail2 is whether they have met this person before — calibrate effort accordingly (first time = slightly more considered, been together a while = relaxed confidence)`,
+
+    'job-interview': `
+JOB INTERVIEW RULES:
+- NO trainers unless industry (occasionDetail) is explicitly creative or startup
+- NO casual t-shirts, hoodies, joggers or sportswear under any circumstances
+- NO loud colours, bold patterns or graphics
+- Smart trousers, chinos, shirts, blazers, formal or clean minimal leather shoes only
+- occasionDetail is the industry — corporate = sharper, creative = smarter casual
+- occasionDetail2 is seniority — entry level can be smart casual, senior/management should be noticeably sharper`,
+
+    'festival-summer': `
+FESTIVAL / SUMMER RULES:
+- NO joggers, formal trousers, heavy denim, thick knitwear, suits or formal shoes
+- NO dark heavy fabrics — no thick black cotton, wool or heavyweight items
+- Lightweight fabrics only — linen, lightweight cotton, jersey
+- Shorts, linen trousers, lightweight t-shirts, light shirts, trainers, canvas shoes, sandals only
+- occasionDetail is what they are dressing for — use it to set the tone
+- occasionDetail2 is duration — multi-day means practical layering matters more`,
+
+    'wedding-guest': `
+WEDDING GUEST RULES:
+- NO sportswear, trainers, casual t-shirts, hoodies or joggers under any circumstances
+- Smart and occasion-appropriate always
+- occasionDetail is dress code — match formality accordingly
+- occasionDetail2 is suit ownership: if they own a good one advise on styling it; if old/cheap advise upgrading key pieces; if no suit advise on smart trousers and blazer`,
+
+    'night-out': `
+NIGHT OUT RULES:
+- occasionDetail is venue type — casual bars: smart casual, clean trainers ok; club: smarter, no sportswear; restaurant then bars: smart casual minimum no trainers; house party: relaxed but considered
+- occasionDetail2 is time of night — all day session means practical and comfortable throughout; late start means sharp from the off
+- No formal suits unless venue is explicitly black tie
+- No sportswear or gym wear ever`,
+
+    'smart-casual-work': `
+SMART CASUAL WORK RULES:
+- NO sportswear, gym wear, hoodies or joggers ever
+- occasionDetail and occasionDetail2 are both about work location — office needs sharper, WFH can be slightly more relaxed
+- Chinos, smart trousers, shirts, smart casual jackets, clean shoes always`,
+
+    'holiday-travel': `
+HOLIDAY / TRAVEL RULES:
+- NO formal trousers, suits, heavy fabrics or formal shoes
+- Lightweight and practical but still looks good
+- occasionDetail is destination — beach vs city break vs long-haul all need different approaches
+- occasionDetail2 is trip length — longer trips need more versatile pieces`,
+  };
+
+  const rules = occasionRules[occasionData.occasion] || '';
+
+  const prompt = `You are a real personal stylist writing directly to a man who needs help dressing for a specific occasion. Write like a knowledgeable friend giving direct, honest, specific advice — not like a report being generated.
+
+OCCASION: ${occasionData.occasionName}
+OCCASION DETAIL (Q3): ${occasionData.occasionDetail || 'Not specified'}
+OCCASION DETAIL 2 (Q4): ${occasionData.occasionDetail2 || 'Not specified'}
+BUDGET PER ITEM: ${occasionData.budget}
+BUILD: ${occasionData.fit}
+STYLE PREFERENCE: ${occasionData.style}
+
+${rules}
+
+GENERAL RULES FOR ALL OCCASIONS:
+- Never recommend a product that does not suit the occasion even if it is the only option
+- Better to recommend 2 excellent products than 3 where one is wrong
+- Never recommend joggers, gym wear or sportswear unless the occasion explicitly calls for it
+- Always ask: would a real stylist actually suggest this for this specific person and occasion?
+
+TONE — CRITICAL:
+- Write like a real person talking, not a document being generated
+- Direct, warm and specific — like advice from a knowledgeable friend
+- Never use: system, intentional, cohesive, silhouette, taper, tapered, aesthetic, palette, framework, elevate, curated, layering piece, overshirt
+- Replace fashion jargon with plain English at all times
+- Every sentence must be specific to this person's occasion, build and budget
+- Short punchy sentences, no waffle
+
+AVAILABLE PRODUCTS — only recommend products from this exact list:
+${JSON.stringify(productList, null, 2)}
+
+Respond with JSON only, no markdown:
+{
+  "occasionTitle": "Short punchy title e.g. Your Date Night Look",
+  "openingNote": "2-3 sentences written like a personal note — acknowledge their specific occasion detail, what the goal is, what you are giving them. Warm and direct.",
+  "whatToWear": {
+    "headline": "One punchy sentence summarising the outfit direction",
+    "outfitFormula": "3-4 sentences describing the complete outfit top to bottom in plain English — specific to their build and occasion. No jargon.",
+    "fitAdvice": "2 sentences of specific fit advice for their build — what to look for and what to avoid when trying things on."
+  },
+  "whatToAvoid": "2-3 specific things to avoid for this occasion and build — written like a friend telling them honestly. Specific not generic.",
+  "stylistTip": "One insider tip most people do not know — specific to this occasion. Should feel like a genuine secret.",
+  "recommendedPieces": [
+    {
+      "category": "category name",
+      "name": "exact product name from the list above",
+      "brand": "brand",
+      "price": "£XX",
+      "url": "exact url from the list",
+      "why": "One sentence — why this piece works for their occasion and build"
+    }
+  ],
+  "whereToShop": {
+    "intro": "One sentence — if our picks are not quite right here is exactly what to look for",
+    "searchTerms": [
+      { "site": "ASOS", "search": "exact search term to use", "whatToLookFor": "specific fabric, fit or feature to check" },
+      { "site": "Zara", "search": "exact search term", "whatToLookFor": "what to check" },
+      { "site": "H&M", "search": "exact search term", "whatToLookFor": "what to check" }
+    ],
+    "brandsToConsider": "2-3 specific brands suited to this occasion and budget",
+    "priceGuidance": "What to expect to pay per category at their budget level",
+    "avoid": "One sentence — what to avoid when shopping independently for this occasion"
+  }
+}
+
+Rules:
+- JSON only, no markdown
+- recommendedPieces: 2-3 items only — only include products that genuinely suit the occasion
+- Only use products from the list — do not invent products
+- Every field must be specific to the occasion and their answers`;
+
+  let parsed = null;
+  let lastError = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const message = await anthropic.messages.create({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 3000,
+        messages: [{ role: 'user', content: prompt }],
+      });
+      const raw = message.content[0].text.trim();
+      const text = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+      parsed = JSON.parse(text);
+      console.log(`=== OCCASION CONTENT attempt ${attempt} ===\n${JSON.stringify(parsed, null, 2)}\n=== END ===`);
+      break;
+    } catch (err) {
+      lastError = err;
+      console.error(`Claude parse failed attempt ${attempt}:`, err.message);
+      if (attempt < 3) console.log('Retrying...');
+    }
+  }
+  if (!parsed) throw new Error(`Claude failed after 3 attempts: ${lastError?.message}`);
+  return parsed;
+}
+
+// ── BUILD OCCASION PDF ────────────────────────────────────────────────────────
+
+async function buildOccasionPDF(content, occasionData, products) {
+  const pdfPath = path.join(os.tmpdir(), `outfitify-occasion-${Date.now()}.pdf`);
+  const doc = new PDFDocument({ size: 'A4', margin: 0, autoFirstPage: true });
+  const stream = fs.createWriteStream(pdfPath);
+  doc.pipe(stream);
+
+  const BG = '#0A0A0A', HEADER = '#111111', BORDER = '#2A2520', GREEN = '#B8A898';
+  const WHITE = '#F2EDE6', GREY = '#7A6E66', MUTED = '#C8BFB5';
+  const CARD = '#141210', CARD2 = '#1C1916', RED = '#C4886A';
+  const PW = 595, PH = 842, PAD = 50, IW = 495;
+
+  const bg   = () => doc.rect(0, 0, PW, PH).fill(BG);
+  const lcard = (x, y, w, h, accent) => { doc.rect(x, y, w, h).fill(CARD); doc.rect(x, y, 2, h).fill(accent || GREEN); };
+  const textH = (str, fontSize, fontName, width) => { doc.fontSize(fontSize).font(fontName || 'Helvetica'); return doc.heightOfString(str || '', { width, lineGap: 2 }); };
+
+  function pageHeader(sub) {
+    doc.rect(0, 0, PW, 36).fill(HEADER);
+    doc.rect(0, 35, PW, 1).fill(BORDER);
+    doc.fontSize(8).fillColor(WHITE).font('Helvetica-Bold').text('OUTFITIFY', 0, 11, { width: PW, align: 'center', characterSpacing: 6 });
+    if (sub) doc.fontSize(6.5).fillColor(GREY).font('Helvetica').text(sub.toUpperCase(), 0, 22, { width: PW, align: 'center', characterSpacing: 2 });
+  }
+
+  function footer() {
+    doc.rect(0, PH - 28, PW, 28).fill(HEADER);
+    doc.rect(0, PH - 28, PW, 1).fill(BORDER);
+    doc.fontSize(7).fillColor(GREY).font('Helvetica').text('OUTFITIFY.CO.UK  ·  OCCASION STYLE GUIDE', 0, PH - 15, { width: PW, align: 'center', characterSpacing: 1 });
+  }
+
+  function sectionLabel(text, y, color) {
+    doc.fontSize(6.5).fillColor(color || GREEN).font('Helvetica-Bold').text(text, PAD, y, { characterSpacing: 3 });
+    doc.moveTo(PAD, y + 12).lineTo(PAD + IW, y + 12).strokeColor(BORDER).lineWidth(0.5).stroke();
+  }
+
+  // ── PAGE 1 ────────────────────────────────────────────────────────────────
+  bg();
+  doc.rect(0, 40, PW, 180).fill('#0E0C0A');
+  doc.moveTo(0, 220).lineTo(PW, 220).strokeColor(BORDER).lineWidth(0.5).stroke();
+  pageHeader('Occasion Style Guide');
+
+  doc.fontSize(9).fillColor(GREEN).font('Helvetica-Bold').text("YOUR STYLIST'S VERDICT", PAD, 56, { characterSpacing: 3 });
+  const titleParts = (content.occasionTitle || occasionData.occasionName).toUpperCase().split(' ');
+  const mid = Math.ceil(titleParts.length / 2);
+  doc.fontSize(38).fillColor(WHITE).font('Helvetica-Bold').text(titleParts.slice(0, mid).join(' '), PAD, 76);
+  doc.fontSize(38).fillColor(GREEN).font('Helvetica-Bold').text(titleParts.slice(mid).join(' '), PAD, 118);
+
+  const noteH = Math.max(textH(content.openingNote || '', 10, 'Helvetica', IW - 28) + 36, 80);
+  lcard(PAD, 232, IW, noteH, GREEN);
+  doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold').text('A NOTE FROM YOUR STYLIST', PAD + 14, 242, { characterSpacing: 2 });
+  doc.fontSize(10).fillColor(MUTED).font('Helvetica').text(content.openingNote || '', PAD + 14, 258, { width: IW - 28, lineGap: 3 });
+
+  let curY = 232 + noteH + 24;
+
+  sectionLabel('THE OUTFIT', curY);
+  curY += 20;
+  const headlineH = Math.max(textH(content.whatToWear?.headline || '', 13, 'Helvetica-Bold', IW - 28) + 28, 52);
+  lcard(PAD, curY, IW, headlineH, GREEN);
+  doc.fontSize(13).fillColor(WHITE).font('Helvetica-Bold').text(content.whatToWear?.headline || '', PAD + 14, curY + 14, { width: IW - 28, lineGap: 2 });
+  curY += headlineH + 12;
+
+  const formulaH = textH(content.whatToWear?.outfitFormula || '', 10, 'Helvetica', IW) + 8;
+  doc.fontSize(10).fillColor(MUTED).font('Helvetica').text(content.whatToWear?.outfitFormula || '', PAD, curY, { width: IW, lineGap: 4 });
+  curY += formulaH + 16;
+
+  if (curY + 60 < PH - 80) {
+    sectionLabel('FIT ADVICE FOR YOUR BUILD', curY);
+    curY += 20;
+    const fitH = Math.max(textH(content.whatToWear?.fitAdvice || '', 9.5, 'Helvetica', IW - 28) + 28, 52);
+    lcard(PAD, curY, IW, fitH, GREEN);
+    doc.fontSize(9.5).fillColor(MUTED).font('Helvetica').text(content.whatToWear?.fitAdvice || '', PAD + 14, curY + 14, { width: IW - 28, lineGap: 3 });
+    curY += fitH + 16;
+  }
+
+  if (curY + 60 < PH - 80) {
+    sectionLabel('WHAT TO AVOID', curY, RED);
+    curY += 20;
+    const avoidH = Math.max(textH(content.whatToAvoid || '', 9.5, 'Helvetica', IW - 28) + 28, 52);
+    lcard(PAD, curY, IW, avoidH, RED);
+    doc.fontSize(9.5).fillColor(MUTED).font('Helvetica').text(content.whatToAvoid || '', PAD + 14, curY + 14, { width: IW - 28, lineGap: 3 });
+    curY += avoidH + 16;
+  }
+
+  if (curY + 60 < PH - 80 && content.stylistTip) {
+    sectionLabel("STYLIST'S INSIDER TIP", curY);
+    curY += 20;
+    const tipH = Math.max(textH(content.stylistTip, 9.5, 'Helvetica', IW - 28) + 28, 52);
+    doc.rect(PAD, curY, IW, tipH).fill(CARD2);
+    doc.rect(PAD, curY, IW, tipH).strokeColor(GREEN).lineWidth(0.5).stroke();
+    doc.fontSize(9.5).fillColor(MUTED).font('Helvetica').text(content.stylistTip, PAD + 14, curY + 14, { width: IW - 28, lineGap: 3 });
+  }
+
+  footer();
+
+  // ── PAGE 2 — PRODUCT PICKS + WHERE TO SHOP ─────────────────────────────────
+  doc.addPage();
+  bg();
+  pageHeader('Your Picks');
+
+  doc.rect(0, 40, PW, 90).fill('#0E0C0A');
+  doc.moveTo(0, 130).lineTo(PW, 130).strokeColor(BORDER).lineWidth(0.5).stroke();
+
+  const pieces = (content.recommendedPieces || []).slice(0, 3);
+  doc.fontSize(24).fillColor(WHITE).font('Helvetica-Bold').text('HAND-PICKED', PAD, 52);
+  doc.fontSize(24).fillColor(GREEN).font('Helvetica-Bold').text('FOR THIS OCCASION', PAD, 80);
+  doc.fontSize(9).fillColor(GREY).font('Helvetica-Oblique')
+    .text(`Chosen for your build, your budget and ${(occasionData.occasionName || '').toLowerCase()} — click any name to buy`, PAD, 118, { width: IW });
+
+  const allProductItems = Object.values(products).flat();
+
+  const imageBuffers = await Promise.all(pieces.map(async piece => {
+    const match = allProductItems.find(p => p['Item Name'] === piece.name);
+    if (!match?.['Image URL']) return null;
+    try {
+      const r = await axios.get(match['Image URL'], { responseType: 'arraybuffer', timeout: 5000 });
+      return Buffer.from(r.data);
+    } catch { return null; }
+  }));
+
+  const CARD_H = 80, IMG_W = 68, IMG_PAD = 8;
+  let pieceY = 148;
+
+  for (let i = 0; i < pieces.length; i++) {
+    const piece = pieces[i];
+    if (pieceY + CARD_H > PH - 280) break;
+    const tx = PAD + IMG_PAD + IMG_W + 12, priceColX = PAD + IW - 90, textW = priceColX - tx - 8;
+    doc.rect(PAD, pieceY, IW, CARD_H).fill(CARD);
+    doc.rect(PAD, pieceY, IW, CARD_H).strokeColor(BORDER).lineWidth(0.5).stroke();
+    const imgY = pieceY + (CARD_H - IMG_W) / 2;
+    if (imageBuffers[i]) {
+      try { doc.save(); doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).clip(); doc.image(imageBuffers[i], PAD + IMG_PAD, imgY, { width: IMG_W, height: IMG_W, cover: [IMG_W, IMG_W] }); doc.restore(); }
+      catch { doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).fill(CARD2); }
+    } else { doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).fill(CARD2); }
+    const productUrl = piece.url || allProductItems.find(p => p['Item Name'] === piece.name)?.['Product URL'] || null;
+    doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold').text((piece.category || '').toUpperCase(), tx, pieceY + 10, { width: textW, lineBreak: false, characterSpacing: 1.5 });
+    doc.fontSize(11).fillColor(productUrl ? GREEN : WHITE).font('Helvetica-Bold').text(piece.name || '', tx, pieceY + 24, { width: textW, lineBreak: false, ...(productUrl ? { link: productUrl, underline: true } : {}) });
+    doc.fontSize(8.5).fillColor(GREY).font('Helvetica').text(piece.why || '', tx, pieceY + 42, { width: textW, lineGap: 1.5 });
+    doc.fontSize(16).fillColor(GREEN).font('Helvetica-Bold').text(piece.price || '', priceColX, pieceY + 16, { width: 88, align: 'right', lineBreak: false, ...(productUrl ? { link: productUrl } : {}) });
+    doc.fontSize(8).fillColor(GREY).font('Helvetica').text(piece.brand || '', priceColX, pieceY + 38, { width: 88, align: 'right', lineBreak: false });
+    pieceY += CARD_H + 6;
+  }
+
+  // WHERE TO SHOP YOURSELF
+  const ws = content.whereToShop;
+  if (ws) {
+    const shopY = pieceY + 16;
+    sectionLabel('IF OUR PICKS ARE NOT QUITE RIGHT', shopY);
+    let wsY = shopY + 20;
+
+    if (ws.intro) {
+      doc.fontSize(9.5).fillColor(MUTED).font('Helvetica').text(ws.intro, PAD, wsY, { width: IW, lineGap: 3 });
+      wsY += textH(ws.intro, 9.5, 'Helvetica', IW) + 14;
+    }
+
+    (ws.searchTerms || []).forEach(term => {
+      if (wsY + 52 > PH - 60) return;
+      doc.rect(PAD, wsY, IW, 48).fill(CARD2);
+      doc.rect(PAD, wsY, 2, 48).fill(GREEN);
+      doc.fontSize(8).fillColor(GREEN).font('Helvetica-Bold').text(term.site.toUpperCase(), PAD + 14, wsY + 8, { characterSpacing: 2 });
+      doc.fontSize(9).fillColor(WHITE).font('Helvetica-Bold').text(`"${term.search}"`, PAD + 14, wsY + 22, { width: (IW - 28) / 2, lineBreak: false });
+      doc.fontSize(7.5).fillColor(GREY).font('Helvetica').text(term.whatToLookFor || '', PAD + 14 + (IW - 28) / 2 + 8, wsY + 24, { width: (IW - 28) / 2 - 8 });
+      wsY += 54;
+    });
+
+    if (wsY + 48 < PH - 60) {
+      const hw = (IW - 8) / 2;
+      doc.rect(PAD, wsY, hw, 48).fill(CARD); doc.rect(PAD, wsY, 2, 48).fill(GREEN);
+      doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold').text('BRANDS TO CONSIDER', PAD + 14, wsY + 8, { characterSpacing: 2 });
+      doc.fontSize(8.5).fillColor(MUTED).font('Helvetica').text(ws.brandsToConsider || '', PAD + 14, wsY + 22, { width: hw - 28 });
+      const col2x = PAD + hw + 8;
+      doc.rect(col2x, wsY, hw, 48).fill(CARD); doc.rect(col2x, wsY, 2, 48).fill(GREEN);
+      doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold').text('PRICE GUIDANCE', col2x + 14, wsY + 8, { characterSpacing: 2 });
+      doc.fontSize(8.5).fillColor(MUTED).font('Helvetica').text(ws.priceGuidance || '', col2x + 14, wsY + 22, { width: hw - 28 });
+      wsY += 56;
+    }
+
+    if (ws.avoid && wsY + 36 < PH - 60) {
+      doc.rect(PAD, wsY, IW, 36).fill(CARD2); doc.rect(PAD, wsY, 2, 36).fill(RED);
+      doc.fontSize(7).fillColor(RED).font('Helvetica-Bold').text('AVOID WHEN SHOPPING:  ', PAD + 14, wsY + 12, { continued: true, characterSpacing: 1 });
+      doc.fontSize(7).fillColor(MUTED).font('Helvetica').text(ws.avoid, { lineBreak: false });
+    }
+  }
+
+  footer();
+  doc.end();
+
+  return new Promise((resolve, reject) => {
+    stream.on('finish', () => resolve(pdfPath));
+    stream.on('error', reject);
+  });
+}
+
+// ── SEND OCCASION EMAIL ───────────────────────────────────────────────────────
+
+async function sendOccasionEmail(toEmail, downloadUrl, occasionName, sessionId) {
+  const emailBody = {
+    from: { address: 'outfitify@outfitify.co.uk', name: 'Outfitify' },
+    to: [{ email_address: { address: toEmail } }],
+    subject: `Your ${occasionName} Style Guide is Ready`,
+    htmlbody: `
+      <div style="background:#0A0A0A;padding:0;font-family:Arial,sans-serif;max-width:600px;margin:0 auto;border:1px solid #2A2520">
+        <div style="background:#111111;padding:28px 40px;border-bottom:1px solid #2A2520;text-align:center">
+          <p style="color:#7A6E66;font-size:10px;letter-spacing:4px;margin:0 0 4px;text-transform:uppercase">Occasion Style Guide</p>
+          <h1 style="color:#F2EDE6;font-size:14px;letter-spacing:5px;margin:0;font-weight:600">OUTFITIFY</h1>
+        </div>
+        <div style="padding:44px 40px">
+          <h2 style="color:#F2EDE6;font-size:26px;font-weight:300;margin:0 0 12px;line-height:1.2">Your ${occasionName} guide is ready.</h2>
+          <p style="color:#7A6E66;font-size:14px;line-height:1.7;margin:0 0 32px">Your personalised outfit guide has been built around your answers — what to wear, how it should fit your build, what to avoid, 3 hand-picked products with links and prices, and where to shop if you want to find your own.</p>
+          <a href="${downloadUrl}" style="display:block;background:#F2EDE6;color:#0A0A0A;text-align:center;padding:16px;font-size:11px;font-weight:600;letter-spacing:3px;text-decoration:none;margin:0 0 32px;text-transform:uppercase">DOWNLOAD MY STYLE GUIDE →</a>
+          <div style="background:#111111;border:1px solid #2A2520;border-left:3px solid #B8A898;padding:24px;margin:0 0 24px">
+            <p style="color:#B8A898;font-size:10px;letter-spacing:3px;font-weight:600;margin:0 0 10px;text-transform:uppercase">Got another occasion coming up?</p>
+            <p style="color:#C8BFB5;font-size:13px;line-height:1.7;margin:0 0 16px">Date night, wedding, job interview, festival — each one has its own dedicated guide. £2.49 each, or bundle 2 for £3.99 or 3 for £4.99.</p>
+            <a href="https://occasions.outfitify.co.uk" style="display:block;background:#B8A898;color:#0A0A0A;text-align:center;padding:14px;font-size:11px;font-weight:600;letter-spacing:3px;text-decoration:none;text-transform:uppercase">BROWSE ALL OCCASIONS →</a>
+          </div>
+          <p style="color:#4A4440;font-size:12px;text-align:center;border-top:1px solid #2A2520;padding-top:20px;margin:0">This link is unique to you. If you have any issues, reply to this email.</p>
+        </div>
+        <div style="background:#111111;border-top:1px solid #2A2520;padding:16px 40px;text-align:center">
+          <p style="color:#4A4440;font-size:10px;letter-spacing:2px;margin:0">OUTFITIFY · MAKING STYLE EFFORTLESS · OUTFITIFY.CO.UK</p>
+        </div>
+      </div>`,
+  };
+  const response = await axios.post('https://api.zeptomail.eu/v1.1/email', emailBody, {
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json', Authorization: process.env.ZEPTO_SMTP_PASS },
+  });
+  console.log(`Occasion email sent to ${toEmail}:`, response.data);
+}
+
+// ── SEND BUNDLE EMAIL ─────────────────────────────────────────────────────────
+
+async function sendBundleEmail(toEmail, guides, sessionId) {
+  const guideButtons = guides.map(g => `
+    <div style="margin-bottom:16px">
+      <p style="color:#B8A898;font-size:10px;letter-spacing:2px;font-weight:600;margin:0 0 8px;text-transform:uppercase">${g.occasionName}</p>
+      <a href="${g.downloadUrl}" style="display:block;background:#F2EDE6;color:#0A0A0A;text-align:center;padding:14px;font-size:11px;font-weight:600;letter-spacing:3px;text-decoration:none;text-transform:uppercase">DOWNLOAD ${g.occasionName.toUpperCase()} GUIDE →</a>
+    </div>`).join('');
+
+  const emailBody = {
+    from: { address: 'outfitify@outfitify.co.uk', name: 'Outfitify' },
+    to: [{ email_address: { address: toEmail } }],
+    subject: `Your ${guides.length} Occasion Style Guides Are Ready`,
+    htmlbody: `
+      <div style="background:#0A0A0A;padding:0;font-family:Arial,sans-serif;max-width:600px;margin:0 auto;border:1px solid #2A2520">
+        <div style="background:#111111;padding:28px 40px;border-bottom:1px solid #2A2520;text-align:center">
+          <p style="color:#7A6E66;font-size:10px;letter-spacing:4px;margin:0 0 4px;text-transform:uppercase">Occasion Style Guides</p>
+          <h1 style="color:#F2EDE6;font-size:14px;letter-spacing:5px;margin:0;font-weight:600">OUTFITIFY</h1>
+        </div>
+        <div style="padding:44px 40px">
+          <h2 style="color:#F2EDE6;font-size:26px;font-weight:300;margin:0 0 12px;line-height:1.2">Your ${guides.length} guides are ready.</h2>
+          <p style="color:#7A6E66;font-size:14px;line-height:1.7;margin:0 0 32px">All ${guides.length} of your personalised occasion style guides have been built. Download each one below.</p>
+          ${guideButtons}
+          <div style="background:#111111;border:1px solid #2A2520;border-left:3px solid #B8A898;padding:24px;margin:24px 0">
+            <p style="color:#B8A898;font-size:10px;letter-spacing:3px;font-weight:600;margin:0 0 10px;text-transform:uppercase">Need another occasion?</p>
+            <p style="color:#C8BFB5;font-size:13px;line-height:1.7;margin:0 0 16px">Pick up any remaining occasion guides at £2.49 each.</p>
+            <a href="https://occasions.outfitify.co.uk" style="display:block;background:#B8A898;color:#0A0A0A;text-align:center;padding:14px;font-size:11px;font-weight:600;letter-spacing:3px;text-decoration:none;text-transform:uppercase">BROWSE ALL OCCASIONS →</a>
+          </div>
+          <p style="color:#4A4440;font-size:12px;text-align:center;border-top:1px solid #2A2520;padding-top:20px;margin:0">These links are unique to you. If you have any issues, reply to this email.</p>
+        </div>
+        <div style="background:#111111;border-top:1px solid #2A2520;padding:16px 40px;text-align:center">
+          <p style="color:#4A4440;font-size:10px;letter-spacing:2px;margin:0">OUTFITIFY · MAKING STYLE EFFORTLESS · OUTFITIFY.CO.UK</p>
+        </div>
+      </div>`,
+  };
+  const response = await axios.post('https://api.zeptomail.eu/v1.1/email', emailBody, {
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json', Authorization: process.env.ZEPTO_SMTP_PASS },
+  });
+  console.log(`Bundle email sent to ${toEmail}:`, response.data);
+}
+
+// ── LEGACY STYLE BLUEPRINT (kept intact for existing blueprint customers) ──────
+
+const sessions = new Map();
+
+app.post('/api/save-session', (req, res) => {
+  const { budget, struggles, lifestyle, goal, fit } = req.body;
+  if (!budget) return res.status(400).json({ error: 'Missing required fields' });
+  const sessionId = crypto.randomBytes(16).toString('hex');
+  sessions.set(sessionId, { budget, struggles, lifestyle, goal, fit, createdAt: Date.now() });
+  for (const [id, data] of sessions.entries()) {
+    if (Date.now() - data.createdAt > 7200000) sessions.delete(id);
+  }
+  res.json({ sessionId });
+});
+
+app.post('/api/free-report', async (req, res) => {
+  const { budget, struggles, lifestyle, goal, fit, email } = req.body;
+  if (!budget || !email) return res.status(400).json({ error: 'Missing required fields' });
+  const sessionId = crypto.randomBytes(16).toString('hex');
+  const quizData = { budget, struggles, lifestyle, goal, fit, sessionId };
+  saveFreeSession(sessionId, { ...quizData, email, createdAt: Date.now() });
+  res.json({ success: true, sessionId });
+  generateAndStoreReport(sessionId, quizData, email, 'free').catch(err => {
+    console.error(`Free report failed ${sessionId}:`, err);
+  });
+});
+
+app.post('/api/create-checkout', async (req, res) => {
+  const { sessionId, tier } = req.body;
+  const resolvedTier = tier || 'standard';
+  const quizData = sessions.get(sessionId) || getFreeSession(sessionId);
+  if (!quizData) return res.status(400).json({ error: 'Session not found or expired' });
+  const tierConfig = {
+    standard: { amount: 499, name: 'Outfitify Personal Style Blueprint — Standard' },
+    premium:  { amount: 999, name: 'Outfitify Personal Style Blueprint — Premium' },
+  };
+  const config = tierConfig[resolvedTier] || tierConfig.standard;
+  try {
+    const checkoutSession = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'], customer_creation: 'always', allow_promotion_codes: true,
+      line_items: [{ price_data: { currency: 'gbp', product_data: { name: config.name }, unit_amount: config.amount }, quantity: 1 }],
+      mode: 'payment',
+      success_url: `${process.env.SUCCESS_URL || 'https://success.outfitify.co.uk'}?token={CHECKOUT_SESSION_ID}&sid=${sessionId}`,
+      cancel_url: `${process.env.UNLOCK_PAGE_URL || 'https://quiz.outfitify.co.uk'}?cancelled=true`,
+      metadata: { sessionId, tier: resolvedTier, budget: quizData.budget || '', struggles: quizData.struggles || '', lifestyle: quizData.lifestyle || '', goal: quizData.goal || '', fit: quizData.fit || '' },
+    });
+    res.json({ url: checkoutSession.url });
+  } catch (err) {
+    console.error('Stripe error:', err);
+    res.status(500).json({ error: 'Payment setup failed' });
+  }
 });
 
 app.get('/api/upgrade-to-premium/:sessionId', async (req, res) => {
   const { sessionId } = req.params;
   const dl = getDownload(sessionId);
   const quizData = dl?.quizData || sessions.get(sessionId) || getFreeSession(sessionId);
-  if (!quizData) {
-    console.log(`Upgrade attempt for expired session ${sessionId}`);
-    return res.redirect('https://quiz.outfitify.co.uk?msg=session_expired');
-  }
+  if (!quizData) return res.redirect('https://quiz.outfitify.co.uk?msg=session_expired');
   try {
-    console.log(`Creating direct premium upgrade checkout for session ${sessionId}`);
     const checkoutSession = await stripe.checkout.sessions.create({
-      payment_method_types: ['card'],
-      customer_creation: 'always',
-      allow_promotion_codes: true,
-      line_items: [{
-        price_data: {
-          currency: 'gbp',
-          product_data: {
-            name: 'Outfitify Personal Style Blueprint — Premium',
-            description: 'Complete style system: 9 product picks, brand guide, never buy again list, and cost per wear insight.',
-            images: ['https://outfitify.co.uk/assets/images/image04.png']
-          },
-          unit_amount: 999
-        },
-        quantity: 1
-      }],
+      payment_method_types: ['card'], customer_creation: 'always', allow_promotion_codes: true,
+      line_items: [{ price_data: { currency: 'gbp', product_data: { name: 'Outfitify Personal Style Blueprint — Premium' }, unit_amount: 999 }, quantity: 1 }],
       mode: 'payment',
       success_url: `${process.env.SUCCESS_URL || 'https://success.outfitify.co.uk'}?token={CHECKOUT_SESSION_ID}&sid=${sessionId}`,
       cancel_url: `https://unlock.outfitify.co.uk?sid=${sessionId}&cancelled=true`,
-      metadata: {
-        sessionId, tier: 'premium',
-        budget: quizData.budget || '', struggles: quizData.struggles || '',
-        lifestyle: quizData.lifestyle || '', goal: quizData.goal || '', fit: quizData.fit || '',
-      },
+      metadata: { sessionId, tier: 'premium', budget: quizData.budget || '', struggles: quizData.struggles || '', lifestyle: quizData.lifestyle || '', goal: quizData.goal || '', fit: quizData.fit || '' },
     });
     res.redirect(checkoutSession.url);
   } catch (err) {
@@ -371,6 +924,8 @@ app.get('/api/upgrade-to-premium/:sessionId', async (req, res) => {
     res.redirect(`https://unlock.outfitify.co.uk?sid=${sessionId}`);
   }
 });
+
+// ── LEGACY: GENERATE AND STORE BLUEPRINT REPORT ──────────────────────────────
 
 async function generateAndStoreReport(sessionId, quizData, userEmail, tier = 'standard') {
   activeJobs++;
@@ -388,9 +943,6 @@ async function generateAndStoreReport(sessionId, quizData, userEmail, tier = 'st
     saveDownload(sessionId, { token, pdfPath, email: userEmail, quizData, tier, createdAt: Date.now() });
     const downloadUrl = `${process.env.BASE_URL}/api/download/${token}`;
     await sendEmail(userEmail, downloadUrl, reportContent.styleIdentity.name, tier, sessionId);
-    if (userEmail && (tier === 'standard' || tier === 'premium')) {
-      addToMailchimp(userEmail, quizData, tier).catch(err => console.error('Mailchimp paid tag failed:', err));
-    }
     console.log(`${tier} report ready for session ${sessionId}`);
   } catch (err) {
     console.error(`Report generation failed for ${sessionId}:`, err);
@@ -399,6 +951,8 @@ async function generateAndStoreReport(sessionId, quizData, userEmail, tier = 'st
     console.log(`Job done for ${sessionId}. Active jobs remaining: ${activeJobs}`);
   }
 }
+
+// ── LEGACY: FETCH PRODUCTS (blueprint product — filters by old Style column) ──
 
 async function fetchProducts(budget, goal) {
   const auth = new google.auth.GoogleAuth({
@@ -446,7 +1000,6 @@ async function fetchProducts(budget, goal) {
   }
 
   const { primary, fallback } = getStyleTags(goal);
-  console.log(`[fetchProducts] goal="${goal}" → primary styles: [${primary}], fallback: [${fallback}]`);
 
   function matchesStyle(p, tags) {
     const s = (p['Style'] || '').trim();
@@ -463,8 +1016,6 @@ async function fetchProducts(budget, goal) {
     const active = !p['Status'] || p['Status'].toLowerCase() === 'active';
     return p['Item Name'] && active;
   });
-
-  console.log(`[fetchProducts] budget=£${maxPrice}, in-budget items=${inBudget.length}`);
 
   const categories = ['Top', 'Bottoms', 'Shoes', 'Hoodie/Jacket'];
   const selected = {};
@@ -492,11 +1043,12 @@ async function fetchProducts(budget, goal) {
       pool = [...pool, ...extras];
     }
     selected[cat] = pool.sort(() => Math.random() - 0.5).slice(0, 8);
-    console.log(`[fetchProducts] category="${cat}" final pool size: ${selected[cat].length}`);
   });
 
   return selected;
 }
+
+// ── LEGACY: GENERATE REPORT CONTENT ──────────────────────────────────────────
 
 async function generateReportContent(quizData, products, tier = 'standard') {
   const productSummary = {};
@@ -595,13 +1147,9 @@ TONE RULES — THIS IS THE MOST IMPORTANT SECTION:
 - Every sentence must sound like it could be said out loud by a friend who knows about clothes
 - Second person only ("you", "your")
 - Never use these words or phrases under any circumstances: "system", "intentional", "cohesive", "silhouette", "taper", "tapered", "aesthetic", "layering piece", "overshirt", "framework", "elevate", "curated", "palette" (say "colours" instead), "wardrobe staples", "key pieces", "game changer", "it's important to", "consider", "you might want to", "here are some tips", "great", "amazing", "awesome", "elevate your look"
-- If you must use a fashion term, explain it immediately in plain English — e.g. "a slim-straight cut (straight leg, not narrowing toward the ankle)"
-- Replace jargon with plain English: "silhouette" → "the shape of what you're wearing", "taper" → "narrowing toward the ankle", "cohesive" → "works together", "intentional" → "put together", "aesthetic" → "look", "layering piece" → "something to wear over a t-shirt"
+- If you must use a fashion term, explain it immediately in plain English
+- Replace jargon with plain English throughout
 - Never start with "Remember" or "Note that"
-- Write section content like a stylist giving direct advice, not like a report being generated
-- The diagnosis body should read like someone who has looked at your answers and is telling you honestly what the problem is
-- The wardrobe blueprint priorities should read like "here's what I'd buy first and why" — opinionated, direct, specific
-- The "avoid" field should sound like a friend telling you to stop doing something, not a warning label
 - Be direct and specific — never vague
 
 Generate a style report with exactly this JSON structure (JSON only, no markdown, no preamble):
@@ -632,7 +1180,7 @@ Generate a style report with exactly this JSON structure (JSON only, no markdown
 
 Rules:
 - wardrobeBlueprint.priorities must contain exactly 5 items
-- recommendedPieces: 6-9 pieces for paid tiers. Quality over quantity.
+- recommendedPieces: 6-9 pieces for paid tiers
 - whereToInvest: exactly 4 brands, UK-accessible only
 - JSON only, no markdown, no preamble`;
 
@@ -643,14 +1191,11 @@ Rules:
       const message = await anthropic.messages.create({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 6000,
-        messages: [{ role: 'user', content: prompt }]
+        messages: [{ role: 'user', content: prompt }],
       });
       const raw = message.content[0].text.trim();
       const text = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
       parsed = JSON.parse(text);
-      console.log(`=== CLAUDE OUTPUT (attempt ${attempt}) ===`);
-      console.log(JSON.stringify(parsed, null, 2));
-      console.log('=== END OUTPUT ===');
       break;
     } catch (err) {
       lastError = err;
@@ -658,10 +1203,11 @@ Rules:
       if (attempt < 3) console.log('Retrying...');
     }
   }
-
   if (!parsed) throw new Error(`Claude failed to return valid JSON after 3 attempts: ${lastError?.message}`);
   return parsed;
 }
+
+// ── LEGACY: BUILD PDF ─────────────────────────────────────────────────────────
 
 async function buildPDF(content, quizData, products, tier = 'standard') {
   const pdfPath = path.join(os.tmpdir(), `outfitify-${Date.now()}.pdf`);
@@ -697,7 +1243,6 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
   }
 
   if (tier === 'free') {
-    // PAGE 1
     bg();
     doc.rect(0, 40, PW, 200).fill('#0E0C0A');
     doc.moveTo(0, 240).lineTo(PW, 240).strokeColor(BORDER).lineWidth(0.5).stroke();
@@ -708,13 +1253,11 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
     doc.fontSize(54).fillColor(GREEN).font('Helvetica-Bold').text((nameParts.slice(1).join(' ') || '').toUpperCase(), PAD, 118);
     doc.fontSize(10).fillColor(GREY).font('Helvetica-Oblique').text(content.styleIdentity?.tagline || '', PAD, 194, { width: IW });
 
-    // Intro paragraph — the conversion hook
     const introText = content.styleIdentity?.intro || '';
     const introH = Math.max(textH(introText, 10, 'Helvetica', IW - 28) + 36, 72);
     lcard(PAD, 256, IW, introH, GREEN);
     doc.fontSize(10).fillColor(MUTED).font('Helvetica').text(introText, PAD + 14, 272, { width: IW - 28, lineGap: 3 });
 
-    // Colour palette — swatches only, no labels (mystery)
     const paletteY = 256 + introH + 20;
     doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold').text('YOUR COLOURS', PAD, paletteY, { characterSpacing: 3 });
     doc.moveTo(PAD, paletteY + 12).lineTo(PAD + IW, paletteY + 12).strokeColor(BORDER).lineWidth(0.5).stroke();
@@ -722,17 +1265,14 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
     (content.colourPalette?.colours || []).slice(0, 3).forEach((hex, i) => {
       doc.rect(PAD + i * (sw + swGap), swatchY, sw, sw).fill(hex);
     });
-    // Locked label under swatches
     doc.fontSize(7).fillColor(GREY).font('Helvetica').text('Colour names and usage guide unlocked in your full blueprint', PAD, swatchY + sw + 8, { width: IW });
 
-    // Diagnosis — headline only, no body
     const diagY = swatchY + sw + 36;
     doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold').text("THE PROBLEM WE'VE SPOTTED", PAD, diagY, { characterSpacing: 3 });
     doc.moveTo(PAD, diagY + 12).lineTo(PAD + IW, diagY + 12).strokeColor(BORDER).lineWidth(0.5).stroke();
     lcard(PAD, diagY + 20, IW, 60, GREEN);
     doc.fontSize(12).fillColor(WHITE).font('Helvetica-Bold').text(content.diagnosis?.headline || '', PAD + 16, diagY + 32, { width: IW - 32, lineGap: 2 });
 
-    // What's locked — teaser items
     let curY = diagY + 96;
     doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold').text("WHAT'S IN YOUR FULL BLUEPRINT", PAD, curY, { characterSpacing: 3 });
     doc.moveTo(PAD, curY + 12).lineTo(PAD + IW, curY + 12).strokeColor(BORDER).lineWidth(0.5).stroke();
@@ -751,7 +1291,6 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
       curY += 56;
     });
 
-    // STOP DOING THIS — red card
     const avoidText = content.styleDNA?.avoid || '';
     if (avoidText && curY + 80 < SAFE_BOTTOM) {
       const avoidCardH = Math.max(textH(avoidText, 9.5, 'Helvetica', IW - 28) + 28, 48);
@@ -763,7 +1302,6 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
 
     footer();
 
-    // PAGE 2 — upgrade CTA
     doc.addPage();
     bg();
     pageHeader('Unlock Your Full Blueprint');
@@ -795,7 +1333,6 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
     doc.fontSize(28).fillColor(BG).font('Helvetica-Bold').text('£4.99', PAD + 20, ctaY + 100, { width: IW - 40, align: 'center' });
     doc.fontSize(11).fillColor(BG).font('Helvetica').text('outfitify.co.uk  ·  Unlock in 60 seconds', PAD + 20, ctaY + 128, { width: IW - 40, align: 'center', characterSpacing: 1 });
     footer();
-
     doc.end();
     return new Promise((resolve, reject) => {
       stream.on('finish', () => resolve(pdfPath));
@@ -803,7 +1340,7 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
     });
   }
 
-  // PAID TIERS — unchanged from your current working version
+  // PAID TIERS
   function truncateToFit(str, maxWidth, fontSize, fontName, maxLines) {
     if (!str) return '';
     doc.fontSize(fontSize).font(fontName || 'Helvetica');
@@ -857,7 +1394,7 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
   const rationaleH = textH(content.colourPalette?.rationale || '', 9.5, 'Helvetica', IW);
   const insideY = rationaleY + rationaleH + 24;
   sectionLabel("WHAT'S INSIDE", insideY);
-  [["Why It's Not Working", 'The real reason — specific to your answers'], ['Your Style DNA', 'What to wear, how it should fit and what to avoid'], ['What To Buy First', '5 priorities in order — your stylist\'s sequence'], ['Your Personal Edit', 'Hand-picked pieces with clickable links and prices']].forEach(([title, desc], i) => {
+  [["Why It's Not Working", 'The real reason — specific to your answers'], ['Your Style DNA', 'What to wear, how it should fit and what to avoid'], ['What To Buy First', "5 priorities in order — your stylist's sequence"], ['Your Personal Edit', 'Hand-picked pieces with clickable links and prices']].forEach(([title, desc], i) => {
     const col = i % 2, row = Math.floor(i / 2), cardW = (IW - 10) / 2;
     const x = PAD + col * (cardW + 10), y = insideY + 18 + row * 54;
     doc.rect(x, y, cardW, 46).fill(CARD2); doc.rect(x, y, 2, 46).fill(GREEN);
@@ -1009,6 +1546,8 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
   });
 }
 
+// ── LEGACY: SEND EMAIL ────────────────────────────────────────────────────────
+
 async function sendEmail(toEmail, downloadUrl, styleIdentityName, tier = 'standard', sessionId = '') {
   const upgradeUrl = `https://unlock.outfitify.co.uk?sid=${sessionId}`;
   const tierContent = {
@@ -1075,412 +1614,16 @@ async function sendEmail(toEmail, downloadUrl, styleIdentityName, tier = 'standa
           <p style="color:#4A4440;font-size:10px;letter-spacing:2px;margin:0">OUTFITIFY · MAKING STYLE EFFORTLESS · OUTFITIFY.CO.UK</p>
         </div>
       </div>
-    `
+    `,
   };
 
   const response = await axios.post('https://api.zeptomail.eu/v1.1/email', emailBody, {
-    headers: { 'Accept': 'application/json', 'Content-Type': 'application/json', 'Authorization': process.env.ZEPTO_SMTP_PASS }
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json', Authorization: process.env.ZEPTO_SMTP_PASS },
   });
   console.log(`${tier} email sent to ${toEmail}:`, response.data);
 }
 
-// ── OCCASION GUIDES ──────────────────────────────────────────────────────────
-
-app.post('/api/create-occasion-checkout', async (req, res) => {
-  const { occasion, occasionName, budget, fit, occasionDetail, style, email } = req.body;
-  if (!occasion || !email) return res.status(400).json({ error: 'Missing required fields' });
-
-  const sessionId = crypto.randomBytes(16).toString('hex');
-  const occasionData = { occasion, occasionName, budget, fit, occasionDetail, style, email, createdAt: Date.now() };
-  saveFreeSession(`occ_${sessionId}`, occasionData);
-
-  console.log(`Creating occasion checkout for ${occasion}, session ${sessionId}`);
-
-  try {
-    const checkoutSession = await stripe.checkout.sessions.create({
-      payment_method_types: ['card'],
-      customer_creation: 'always',
-      allow_promotion_codes: true,
-      line_items: [{
-        price_data: {
-          currency: 'gbp',
-          product_data: {
-            name: `Outfitify — ${occasionName} Style Guide`,
-            description: `Your personalised outfit guide for ${occasionName} — built around your build, budget and style.`,
-            images: ['https://outfitify.co.uk/assets/images/image04.png']
-          },
-          unit_amount: 249
-        },
-        quantity: 1
-      }],
-      mode: 'payment',
-      success_url: `${process.env.SUCCESS_URL || 'https://success.outfitify.co.uk'}?token={CHECKOUT_SESSION_ID}&sid=${sessionId}&occasion=true`,
-      cancel_url: `https://occasions.outfitify.co.uk`,
-      metadata: {
-        sessionId,
-        tier: 'occasion',
-        occasion,
-        occasionName,
-        budget: budget || '',
-        fit: fit || '',
-        occasionDetail: occasionDetail || '',
-        style: style || '',
-        email,
-      },
-    });
-    res.json({ url: checkoutSession.url });
-  } catch (err) {
-    console.error('Occasion checkout error:', err);
-    res.status(500).json({ error: 'Payment setup failed' });
-  }
-});
-
-async function generateOccasionReport(sessionId, occasionData, userEmail) {
-  activeJobs++;
-  console.log(`Generating occasion report for ${occasionData.occasion}, session ${sessionId}... (active jobs: ${activeJobs})`);
-  try {
-    const products = await fetchProducts(occasionData.budget, occasionData.style);
-    const reportContent = await generateOccasionContent(occasionData, products);
-    const pdfPath = await buildOccasionPDF(reportContent, occasionData, products);
-    const token = crypto.randomBytes(32).toString('hex');
-    saveDownload(sessionId, { token, pdfPath, email: userEmail, quizData: occasionData, tier: 'occasion', createdAt: Date.now() });
-    const downloadUrl = `${process.env.BASE_URL}/api/download/${token}`;
-    await sendOccasionEmail(userEmail, downloadUrl, occasionData.occasionName, sessionId);
-    console.log(`Occasion report ready for session ${sessionId}`);
-  } catch (err) {
-    console.error(`Occasion report generation failed for ${sessionId}:`, err);
-  } finally {
-    activeJobs--;
-    console.log(`Occasion job done for ${sessionId}. Active jobs remaining: ${activeJobs}`);
-  }
-}
-
-async function generateOccasionContent(occasionData, products) {
-  const productSummary = [];
-  for (const [cat, items] of Object.entries(products)) {
-    items.slice(0, 3).forEach(p => productSummary.push({
-      name: p['Item Name'], brand: p['Brand'], price: `£${p['Price']}`, url: p['Product URL'], category: cat,
-    }));
-  }
-
-  const prompt = `You are a real personal stylist writing directly to a man who needs help dressing for a specific occasion. Write like a knowledgeable friend giving direct, honest, specific advice — not like a report being generated.
-
-OCCASION: ${occasionData.occasionName}
-OCCASION DETAIL: ${occasionData.occasionDetail}
-BUDGET PER ITEM: ${occasionData.budget}
-BUILD: ${occasionData.fit}
-STYLE PREFERENCE: ${occasionData.style}
-
-TONE RULES — CRITICAL:
-- Write like a real person talking, not a document being generated
-- Direct, warm, specific — like advice from a friend who knows about clothes
-- Never use: system, intentional, cohesive, silhouette, taper, aesthetic, palette, framework, elevate, curated
-- Replace any fashion jargon with plain English
-- Every sentence must be specific to this person's occasion, build and budget
-- Short punchy sentences — no waffle
-
-STRICT PRODUCT RULES BY OCCASION — YOU MUST FOLLOW THESE:
-
-DATE NIGHT:
-- NO sportswear, gym wear, hoodies, joggers or trainers unless they are clean minimal court shoes
-- YES to chinos, smart trousers, dark jeans, clean shirts, smart casual tops
-- Shoes must be clean and considered — leather shoes, loafers or minimal clean trainers only
-
-JOB INTERVIEW:
-- NO trainers unless the industry is explicitly creative/startup
-- NO casual t-shirts, hoodies, joggers or sportswear under any circumstances
-- YES to smart trousers, chinos, shirts, smart casual jackets, formal shoes or clean minimal leather shoes
-- Everything must look sharp and deliberate
-
-FESTIVAL / SUMMER:
-- NO joggers, formal trousers, heavy denim, thick knitwear, suits or formal shoes
-- NO dark heavy fabrics — avoid black thick cotton, wool, heavyweight items
-- YES to shorts, linen trousers, lightweight t-shirts, light overshirts, trainers, canvas shoes, sandals
-- Fabrics must be lightweight — linen, lightweight cotton, jersey
-- If no suitable summer product exists in the list, say so in the why field and suggest what to look for instead
-
-SMART CASUAL WORK:
-- NO sportswear, gym wear, hoodies or joggers
-- YES to chinos, smart trousers, shirts, smart casual jackets, clean shoes
-- Nothing too formal, nothing too casual
-
-WEDDING GUEST:
-- NO sportswear, trainers, casual t-shirts, hoodies or joggers
-- YES to suits, smart trousers, dress shirts, smart shoes, loafers
-- Must be occasion-appropriate — smart and considered
-
-HOLIDAY / TRAVEL:
-- NO formal trousers, suits, heavy fabrics or formal shoes
-- YES to lightweight trousers, shorts, t-shirts, lightweight shirts, trainers, sandals, canvas shoes
-- Practical and comfortable but still looks good
-
-GENERAL PRODUCT RULES:
-- If a product doesn't suit the occasion, DO NOT recommend it even if it's the only option in that category
-- It is better to recommend 2 excellent products than 3 where one is wrong
-- Never recommend joggers for any occasion except possibly a very casual festival or summer context
-- Always check: would a real stylist actually suggest this for this specific occasion?
-
-Generate JSON only, no markdown:
-{
-  "occasionTitle": "Short punchy title for this occasion e.g. 'Your Date Night Look'",
-  "openingNote": "2-3 sentences written like a personal note from a stylist — acknowledge the specific occasion detail they gave, what the goal is for their look, and what you're going to give them. Warm and direct.",
-  "whatToWear": {
-    "headline": "One punchy sentence summarising the overall outfit direction",
-    "outfitFormula": "3-4 sentences describing the complete outfit from top to bottom in plain English — specific to their build and the occasion. No jargon. Tell them exactly what to wear and why it works.",
-    "fitAdvice": "2 sentences of specific fit advice for their build — what to look for and what to avoid when trying things on."
-  },
-  "whatToAvoid": "2-3 specific things to avoid for this occasion and their build — written like a friend telling them honestly what not to do. Specific, not generic.",
-  "stylistTip": "One insider tip that most people don't know — specific to this occasion. Should feel like a genuine secret from someone who knows.",
-  "recommendedPieces": [
-    {
-      "category": "category name",
-      "name": "exact product name from the list",
-      "brand": "brand",
-      "price": "£XX",
-      "url": "exact url",
-      "why": "One sentence — why this specific piece works for their occasion and build"
-    }
-  ]
-}
-
-Pick the best 2-3 products from this list that genuinely suit this occasion. If fewer than 3 suitable products exist, only recommend the ones that are actually appropriate — quality over quantity:
-${JSON.stringify(productSummary, null, 2)}
-
-Rules:
-- JSON only, no markdown
-- recommendedPieces: 2-3 items maximum — only include products that genuinely suit the occasion
-- Every field must be specific to the occasion and their answers
-- Never sound like AI generated this
-- If a product doesn't fit the occasion rules above, do not include it`;
-
-  let parsed = null;
-  let lastError = null;
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      const message = await anthropic.messages.create({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 3000,
-        messages: [{ role: 'user', content: prompt }]
-      });
-      const raw = message.content[0].text.trim();
-      const text = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
-      parsed = JSON.parse(text);
-      console.log(`=== OCCASION CONTENT (attempt ${attempt}) ===`);
-      console.log(JSON.stringify(parsed, null, 2));
-      console.log('=== END ===');
-      break;
-    } catch (err) {
-      lastError = err;
-      console.error(`Occasion Claude parse failed attempt ${attempt}:`, err.message);
-      if (attempt < 3) console.log('Retrying...');
-    }
-  }
-  if (!parsed) throw new Error(`Occasion Claude failed after 3 attempts: ${lastError?.message}`);
-  return parsed;
-}
-
-async function buildOccasionPDF(content, occasionData, products) {
-  const pdfPath = path.join(os.tmpdir(), `outfitify-occasion-${Date.now()}.pdf`);
-  const doc = new PDFDocument({ size: 'A4', margin: 0, autoFirstPage: true });
-  const stream = fs.createWriteStream(pdfPath);
-  doc.pipe(stream);
-
-  const BG = '#0A0A0A', HEADER = '#111111', BORDER = '#2A2520', GREEN = '#B8A898';
-  const WHITE = '#F2EDE6', GREY = '#7A6E66', MUTED = '#C8BFB5';
-  const CARD = '#141210', CARD2 = '#1C1916', RED = '#C4886A';
-  const PW = 595, PH = 842, PAD = 50, IW = 495;
-
-  function bg() { doc.rect(0, 0, PW, PH).fill(BG); }
-  function pageHeader(sub) {
-    doc.rect(0, 0, PW, 36).fill(HEADER);
-    doc.rect(0, 35, PW, 1).fill(BORDER);
-    doc.fontSize(8).fillColor(WHITE).font('Helvetica-Bold').text('OUTFITIFY', 0, 11, { width: PW, align: 'center', characterSpacing: 6 });
-    if (sub) doc.fontSize(6.5).fillColor(GREY).font('Helvetica').text(sub.toUpperCase(), 0, 22, { width: PW, align: 'center', characterSpacing: 2 });
-  }
-  function footer() {
-    doc.rect(0, PH - 28, PW, 28).fill(HEADER);
-    doc.rect(0, PH - 28, PW, 1).fill(BORDER);
-    doc.fontSize(7).fillColor(GREY).font('Helvetica').text('OUTFITIFY.CO.UK  ·  OCCASION STYLE GUIDE', 0, PH - 15, { width: PW, align: 'center', characterSpacing: 1 });
-  }
-  function lcard(x, y, w, h, accent) {
-    doc.rect(x, y, w, h).fill(CARD);
-    doc.rect(x, y, 2, h).fill(accent || GREEN);
-  }
-  function textH(str, fontSize, fontName, width) {
-    doc.fontSize(fontSize).font(fontName || 'Helvetica');
-    return doc.heightOfString(str || '', { width, lineGap: 2 });
-  }
-  function sectionLabel(text, y, color) {
-    doc.fontSize(6.5).fillColor(color || GREEN).font('Helvetica-Bold').text(text, PAD, y, { characterSpacing: 3 });
-    doc.moveTo(PAD, y + 12).lineTo(PAD + IW, y + 12).strokeColor(BORDER).lineWidth(0.5).stroke();
-  }
-
-  // ── PAGE 1 ─────────────────────────────────────────────────────────────────
-  bg();
-  doc.rect(0, 40, PW, 180).fill('#0E0C0A');
-  doc.moveTo(0, 220).lineTo(PW, 220).strokeColor(BORDER).lineWidth(0.5).stroke();
-  pageHeader('Occasion Style Guide');
-
-  // Hero
-  doc.fontSize(9).fillColor(GREEN).font('Helvetica-Bold').text('YOUR STYLIST\'S VERDICT', PAD, 56, { characterSpacing: 3 });
-  const titleParts = (content.occasionTitle || occasionData.occasionName).split(' ');
-  const mid = Math.ceil(titleParts.length / 2);
-  doc.fontSize(40).fillColor(WHITE).font('Helvetica-Bold').text(titleParts.slice(0, mid).join(' ').toUpperCase(), PAD, 76, { lineBreak: false });
-  doc.fontSize(40).fillColor(GREEN).font('Helvetica-Bold').text(titleParts.slice(mid).join(' ').toUpperCase(), PAD, 118, { lineBreak: false });
-
-  // Opening note
-  const noteH = Math.max(textH(content.openingNote || '', 10, 'Helvetica', IW - 28) + 36, 80);
-  lcard(PAD, 232, IW, noteH, GREEN);
-  doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold').text('A NOTE FROM YOUR STYLIST', PAD + 14, 242, { characterSpacing: 2 });
-  doc.fontSize(10).fillColor(MUTED).font('Helvetica').text(content.openingNote || '', PAD + 14, 258, { width: IW - 28, lineGap: 3 });
-
-  // What to wear
-  let curY = 232 + noteH + 24;
-  sectionLabel('THE OUTFIT', curY);
-  curY += 20;
-
-  const headlineH = Math.max(textH(content.whatToWear?.headline || '', 13, 'Helvetica-Bold', IW - 28) + 28, 52);
-  lcard(PAD, curY, IW, headlineH, GREEN);
-  doc.fontSize(13).fillColor(WHITE).font('Helvetica-Bold').text(content.whatToWear?.headline || '', PAD + 14, curY + 14, { width: IW - 28, lineGap: 2 });
-  curY += headlineH + 12;
-
-  const formulaText = content.whatToWear?.outfitFormula || '';
-  const formulaH = textH(formulaText, 10, 'Helvetica', IW) + 8;
-  doc.fontSize(10).fillColor(MUTED).font('Helvetica').text(formulaText, PAD, curY, { width: IW, lineGap: 4 });
-  curY += formulaH + 16;
-
-  // Fit advice
-  if (curY + 60 < PH - 80) {
-    sectionLabel('FIT ADVICE FOR YOUR BUILD', curY);
-    curY += 20;
-    const fitH = Math.max(textH(content.whatToWear?.fitAdvice || '', 9.5, 'Helvetica', IW - 28) + 28, 52);
-    lcard(PAD, curY, IW, fitH, GREEN);
-    doc.fontSize(9.5).fillColor(MUTED).font('Helvetica').text(content.whatToWear?.fitAdvice || '', PAD + 14, curY + 14, { width: IW - 28, lineGap: 3 });
-    curY += fitH + 16;
-  }
-
-  // What to avoid
-  if (curY + 60 < PH - 80) {
-    sectionLabel('WHAT TO AVOID', curY, RED);
-    curY += 20;
-    const avoidH = Math.max(textH(content.whatToAvoid || '', 9.5, 'Helvetica', IW - 28) + 28, 52);
-    lcard(PAD, curY, IW, avoidH, RED);
-    doc.fontSize(9.5).fillColor(MUTED).font('Helvetica').text(content.whatToAvoid || '', PAD + 14, curY + 14, { width: IW - 28, lineGap: 3 });
-    curY += avoidH + 16;
-  }
-
-  // Stylist tip
-  if (curY + 60 < PH - 80 && content.stylistTip) {
-    sectionLabel('STYLIST\'S INSIDER TIP', curY);
-    curY += 20;
-    const tipH = Math.max(textH(content.stylistTip, 9.5, 'Helvetica', IW - 28) + 28, 52);
-    doc.rect(PAD, curY, IW, tipH).fill(CARD2);
-    doc.rect(PAD, curY, IW, tipH).strokeColor(GREEN).lineWidth(0.5).stroke();
-    doc.fontSize(9.5).fillColor(MUTED).font('Helvetica').text(content.stylistTip, PAD + 14, curY + 14, { width: IW - 28, lineGap: 3 });
-  }
-
-  footer();
-
-  // ── PAGE 2 — PRODUCT PICKS ─────────────────────────────────────────────────
-  doc.addPage();
-  bg();
-  pageHeader('Your 3 Picks');
-
-  doc.rect(0, 40, PW, 90).fill('#0E0C0A');
-  doc.moveTo(0, 130).lineTo(PW, 130).strokeColor(BORDER).lineWidth(0.5).stroke();
-  doc.fontSize(24).fillColor(WHITE).font('Helvetica-Bold').text('3 PIECES PICKED', PAD, 52);
-  doc.fontSize(24).fillColor(GREEN).font('Helvetica-Bold').text('FOR THIS OCCASION', PAD, 80);
-  doc.fontSize(9).fillColor(GREY).font('Helvetica-Oblique').text(`Chosen for your build, your budget and ${occasionData.occasionName.toLowerCase()} — click any name to buy`, PAD, 118, { width: IW });
-
-  const pieces = (content.recommendedPieces || []).slice(0, 3);
-  const imageBuffers = await Promise.all(pieces.map(async piece => {
-    let imageUrl = null;
-    for (const catItems of Object.values(products)) {
-      const match = catItems.find(p => p['Item Name'] === piece.name);
-      if (match) { imageUrl = match['Image URL']; break; }
-    }
-    if (!imageUrl) return null;
-    try { const r = await axios.get(imageUrl, { responseType: 'arraybuffer', timeout: 5000 }); return Buffer.from(r.data); } catch { return null; }
-  }));
-
-  const CARD_H = 80, IMG_W = 68, IMG_PAD = 8;
-  let pieceY = 148;
-  for (let i = 0; i < pieces.length; i++) {
-    const piece = pieces[i];
-    if (pieceY + CARD_H > PH - 180) break;
-    const tx = PAD + IMG_PAD + IMG_W + 12, priceColX = PAD + IW - 90, textW = priceColX - tx - 8;
-    doc.rect(PAD, pieceY, IW, CARD_H).fill(CARD);
-    doc.rect(PAD, pieceY, IW, CARD_H).strokeColor(BORDER).lineWidth(0.5).stroke();
-    const imgY = pieceY + (CARD_H - IMG_W) / 2;
-    if (imageBuffers[i]) {
-      try { doc.save(); doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).clip(); doc.image(imageBuffers[i], PAD + IMG_PAD, imgY, { width: IMG_W, height: IMG_W, cover: [IMG_W, IMG_W] }); doc.restore(); }
-      catch { doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).fill(CARD2); }
-    } else { doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).fill(CARD2); }
-    let productUrl = piece.url || null;
-    if (!productUrl) { for (const catItems of Object.values(products)) { const match = catItems.find(p => p['Item Name'] === piece.name); if (match?.['Product URL']) { productUrl = match['Product URL']; break; } } }
-    doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold').text((piece.category || '').toUpperCase(), tx, pieceY + 10, { width: textW, lineBreak: false, characterSpacing: 1.5 });
-    doc.fontSize(11).fillColor(productUrl ? GREEN : WHITE).font('Helvetica-Bold').text(piece.name || '', tx, pieceY + 24, { width: textW, lineBreak: false, ...(productUrl ? { link: productUrl, underline: true } : {}) });
-    doc.fontSize(8.5).fillColor(GREY).font('Helvetica').text(piece.why || '', tx, pieceY + 42, { width: textW, lineGap: 1.5 });
-    doc.fontSize(16).fillColor(GREEN).font('Helvetica-Bold').text(piece.price || '', priceColX, pieceY + 16, { width: 88, align: 'right', lineBreak: false, ...(productUrl ? { link: productUrl } : {}) });
-    doc.fontSize(8).fillColor(GREY).font('Helvetica').text(piece.brand || '', priceColX, pieceY + 38, { width: 88, align: 'right', lineBreak: false });
-    pieceY += CARD_H + 6;
-  }
-
-  // Upsell CTA
-  const ctaY = pieceY + 24;
-  doc.rect(PAD, ctaY, IW, 130).fill(GREEN);
-  doc.fontSize(11).fillColor(BG).font('Helvetica-Bold').text('WANT YOUR COMPLETE STYLE BLUEPRINT?', PAD + 20, ctaY + 16, { width: IW - 40, align: 'center', characterSpacing: 1 });
-  doc.fontSize(13).fillColor(BG).font('Helvetica').text('Your full personal style consultation — colour guide, what suits your build, what to buy first and 5 hand-picked products. Everything in one place.', PAD + 20, ctaY + 40, { width: IW - 40, align: 'center', lineGap: 2 });
-  doc.fontSize(24).fillColor(BG).font('Helvetica-Bold').text('From £4.99', PAD + 20, ctaY + 90, { width: IW - 40, align: 'center' });
-  doc.fontSize(10).fillColor(BG).font('Helvetica').text('quiz.outfitify.co.uk', PAD + 20, ctaY + 116, { width: IW - 40, align: 'center', characterSpacing: 1 });
-
-  footer();
-  doc.end();
-
-  return new Promise((resolve, reject) => {
-    stream.on('finish', () => resolve(pdfPath));
-    stream.on('error', reject);
-  });
-}
-
-async function sendOccasionEmail(toEmail, downloadUrl, occasionName, sessionId) {
-  const emailBody = {
-    from: { address: 'outfitify@outfitify.co.uk', name: 'Outfitify' },
-    to: [{ email_address: { address: toEmail } }],
-    subject: `Your ${occasionName} Style Guide is Ready`,
-    htmlbody: `
-      <div style="background:#0A0A0A;padding:0;font-family:Arial,sans-serif;max-width:600px;margin:0 auto;border:1px solid #2A2520">
-        <div style="background:#111111;padding:28px 40px;border-bottom:1px solid #2A2520;text-align:center">
-          <p style="color:#7A6E66;font-size:10px;letter-spacing:4px;margin:0 0 4px;text-transform:uppercase">Occasion Style Guide</p>
-          <h1 style="color:#F2EDE6;font-size:14px;letter-spacing:5px;margin:0;font-weight:600">OUTFITIFY</h1>
-        </div>
-        <div style="padding:44px 40px">
-          <h2 style="color:#F2EDE6;font-size:26px;font-weight:300;margin:0 0 12px;line-height:1.2">Your ${occasionName} guide is ready.</h2>
-          <p style="color:#7A6E66;font-size:14px;line-height:1.7;margin:0 0 32px">Your personalised outfit guide has been put together based on your answers — what to wear, how it should fit your build, what to avoid, and 3 hand-picked products with links and prices.</p>
-          <a href="${downloadUrl}" style="display:block;background:#F2EDE6;color:#0A0A0A;text-align:center;padding:16px;font-size:11px;font-weight:600;letter-spacing:3px;text-decoration:none;margin:0 0 32px;text-transform:uppercase">DOWNLOAD MY STYLE GUIDE →</a>
-          <div style="background:#111111;border:1px solid #2A2520;border-left:3px solid #B8A898;padding:24px;margin:0 0 24px">
-            <p style="color:#B8A898;font-size:10px;letter-spacing:3px;font-weight:600;margin:0 0 10px;text-transform:uppercase">Want your complete style blueprint?</p>
-            <p style="color:#C8BFB5;font-size:13px;line-height:1.7;margin:0 0 16px">Your full consultation covers everything — your colours, what works for your build, what to buy first and 5 hand-picked products. Free to start, full blueprint from £4.99.</p>
-            <a href="https://quiz.outfitify.co.uk" style="display:block;background:#B8A898;color:#0A0A0A;text-align:center;padding:14px;font-size:11px;font-weight:600;letter-spacing:3px;text-decoration:none;text-transform:uppercase">GET MY FULL BLUEPRINT — FROM £4.99 →</a>
-          </div>
-          <p style="color:#4A4440;font-size:12px;text-align:center;border-top:1px solid #2A2520;padding-top:20px;margin:0">This link is unique to you. If you have any issues, reply to this email.</p>
-        </div>
-        <div style="background:#111111;border-top:1px solid #2A2520;padding:16px 40px;text-align:center">
-          <p style="color:#4A4440;font-size:10px;letter-spacing:2px;margin:0">OUTFITIFY · MAKING STYLE EFFORTLESS · OUTFITIFY.CO.UK</p>
-        </div>
-      </div>
-    `
-  };
-
-  const response = await axios.post('https://api.zeptomail.eu/v1.1/email', emailBody, {
-    headers: { 'Accept': 'application/json', 'Content-Type': 'application/json', 'Authorization': process.env.ZEPTO_SMTP_PASS }
-  });
-  console.log(`Occasion email sent to ${toEmail}:`, response.data);
-}
-
-// ── END OCCASION GUIDES ───────────────────────────────────────────────────────
-
-
+// ── START SERVER ──────────────────────────────────────────────────────────────
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Outfitify backend running on port ${PORT}`));
