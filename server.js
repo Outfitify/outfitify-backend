@@ -754,86 +754,56 @@ async function buildOccasionPDF(content, occasionData, products) {
 
   const allProductItems = Object.values(products).flat();
 
-  // Fetch images sequentially with a small delay to avoid CDN rate limiting
-  const imageBuffers = [];
-  for (const piece of pieces) {
-    const match = allProductItems.find(p => p['Item Name'] === piece.name);
-    if (!match?.['Image URL']) { imageBuffers.push(null); continue; }
-    try {
-      const r = await axios.get(match['Image URL'], {
-        responseType: 'arraybuffer',
-        timeout: 8000,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Referer': 'https://www.asos.com/',
-          'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
-        },
-      });
-      imageBuffers.push(Buffer.from(r.data));
-    } catch { imageBuffers.push(null); }
-    // Small delay between requests to avoid CDN rate limiting
-    await new Promise(res => setTimeout(res, 150));
-  }
+  // No image fetching — text-only card layout
 
-  const IMG_W = 68, IMG_PAD = 8;
+  const priceColW = 80;
   let pieceY = 148;
 
   for (let i = 0; i < pieces.length; i++) {
     const piece = pieces[i];
-    const tx = PAD + IMG_PAD + IMG_W + 12, priceColX = PAD + IW - 90, textW = priceColX - tx - 8;
+    const textX    = PAD + 14;
+    const priceColX = PAD + IW - priceColW;
+    const textW    = priceColX - textX - 10;
 
-    // Calculate dynamic card height based on actual name + why text height
+    // Dynamic card height: top pad + cat label + name + gap + why + bottom pad
     doc.fontSize(11).font('Helvetica-Bold');
     const nameH = doc.heightOfString(piece.name || '', { width: textW });
     doc.fontSize(8.5).font('Helvetica');
     const whyH = doc.heightOfString(piece.why || '', { width: textW, lineGap: 1.5 });
-    const CARD_H = Math.max(IMG_W + 16, 18 + nameH + 8 + whyH + 14); // top pad + name + gap + why + bottom pad
+    const CARD_H = Math.max(64, 14 + 12 + 6 + nameH + 6 + whyH + 14);
 
     if (pieceY + CARD_H > PH - 100) break;
 
+    // Card background + stone left accent bar
     doc.rect(PAD, pieceY, IW, CARD_H).fill(CARD);
     doc.rect(PAD, pieceY, IW, CARD_H).strokeColor(BORDER).lineWidth(0.5).stroke();
-
-    // Image — cover crop anchored to top-center so product is visible
-    const imgY = pieceY + (CARD_H - IMG_W) / 2;
-    if (imageBuffers[i]) {
-      try {
-        doc.save();
-        doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).clip();
-        doc.image(imageBuffers[i], PAD + IMG_PAD, imgY, {
-          width: IMG_W,
-          height: IMG_W,
-          cover: [IMG_W, IMG_W],
-          align: 'center',
-          valign: 'top',
-        });
-        doc.restore();
-      } catch { doc.restore(); doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).fill(CARD2); }
-    } else {
-      doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).fill(CARD2);
-    }
+    doc.rect(PAD, pieceY, 2, CARD_H).fill(GREEN);
 
     const productUrl = piece.url || allProductItems.find(p => p['Item Name'] === piece.name)?.['Product URL'] || null;
 
-    // Text — category label, then name, then why — all with correct vertical spacing
-    const catY  = pieceY + 10;
-    const nameY = catY + 12;
+    // Category label
+    const catY  = pieceY + 14;
     doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold')
-      .text((piece.category || '').toUpperCase(), tx, catY, { width: textW, lineBreak: false, characterSpacing: 1.5 });
+      .text((piece.category || '').toUpperCase(), textX, catY, { width: textW, lineBreak: false, characterSpacing: 1.5 });
+
+    // Product name — clickable if URL exists
+    const nameY = catY + 18;
     doc.fontSize(11).fillColor(productUrl ? GREEN : WHITE).font('Helvetica-Bold');
     const actualNameH = doc.heightOfString(piece.name || '', { width: textW });
+    doc.text(piece.name || '', textX, nameY, { width: textW, ...(productUrl ? { link: productUrl, underline: true } : {}) });
+
+    // Why text
     const whyY = nameY + actualNameH + 6;
-    doc.text(piece.name || '', tx, nameY, { width: textW, ...(productUrl ? { link: productUrl, underline: true } : {}) });
     doc.fontSize(8.5).fillColor(GREY).font('Helvetica')
-      .text(piece.why || '', tx, whyY, { width: textW, lineGap: 1.5 });
+      .text(piece.why || '', textX, whyY, { width: textW, lineGap: 1.5 });
 
-    // Price + brand — right column, vertically centred in card
+    // Price + brand — right column, vertically centred
     doc.fontSize(16).fillColor(GREEN).font('Helvetica-Bold')
-      .text(piece.price || '', priceColX, pieceY + (CARD_H / 2) - 18, { width: 88, align: 'right', lineBreak: false, ...(productUrl ? { link: productUrl } : {}) });
+      .text(piece.price || '', priceColX, pieceY + (CARD_H / 2) - 14, { width: priceColW, align: 'right', lineBreak: false, ...(productUrl ? { link: productUrl } : {}) });
     doc.fontSize(8).fillColor(GREY).font('Helvetica')
-      .text(piece.brand || '', priceColX, pieceY + (CARD_H / 2) + 4, { width: 88, align: 'right', lineBreak: false });
+      .text(piece.brand || '', priceColX, pieceY + (CARD_H / 2) + 6, { width: priceColW, align: 'right', lineBreak: false });
 
-    pieceY += CARD_H + 6;
+    pieceY += CARD_H + 4;
   }
 
   // COMPLETE YOUR LOOK — cards for any missing required categories
