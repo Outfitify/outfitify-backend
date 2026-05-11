@@ -758,7 +758,15 @@ async function buildOccasionPDF(content, occasionData, products) {
     const match = allProductItems.find(p => p['Item Name'] === piece.name);
     if (!match?.['Image URL']) return null;
     try {
-      const r = await axios.get(match['Image URL'], { responseType: 'arraybuffer', timeout: 5000 });
+      const r = await axios.get(match['Image URL'], {
+        responseType: 'arraybuffer',
+        timeout: 5000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Referer': 'https://www.zara.com/',
+          'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+        },
+      });
       return Buffer.from(r.data);
     } catch { return null; }
   }));
@@ -1651,7 +1659,18 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
       if (match) { imageUrl = match['Image URL']; break; }
     }
     if (!imageUrl) return null;
-    try { const r = await axios.get(imageUrl, { responseType: 'arraybuffer', timeout: 5000 }); return Buffer.from(r.data); } catch { return null; }
+    try {
+      const r = await axios.get(imageUrl, {
+        responseType: 'arraybuffer',
+        timeout: 5000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Referer': 'https://www.zara.com/',
+          'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+        },
+      });
+      return Buffer.from(r.data);
+    } catch { return null; }
   }));
   const CARD_H = 70, IMG_W = 64, IMG_PAD = 8;
   let pieceY = 148;
