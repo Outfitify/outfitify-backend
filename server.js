@@ -544,7 +544,8 @@ GENERAL RULES FOR ALL OCCASIONS:
 LAYERING RULE — CRITICAL:
 - Every occasion except very casual ones needs a jacket or layer in the outfit formula
 - The layer is what makes an outfit look considered rather than just clothes thrown on
-- Always include the layer in the outfitFormula description even if you do not have a product for it in the picks
+- Only include a layer in the outfitFormula if you are also recommending it as a product in recommendedPieces — if you mention a harrington or blazer in the formula, it must appear in your picks
+- If you cannot find a suitable jacket in the product list, describe the outfit without a layer rather than mentioning one you are not picking
 - Describe what type of layer works — unstructured blazer, lightweight jacket, bomber, lightweight shirt worn open — and why it works for this build
 
 WHY TEXT RULES — CRITICAL:
@@ -560,6 +561,7 @@ OUTFIT FORMULA RULES — CRITICAL:
 - Must include how pieces work together — say "the dark bottom half keeps the eye up toward the face" not just "wear chinos with a shirt"
 - Must include the layer and how to wear it — open, buttoned, sleeves rolled, etc
 - Must reference their specific build — say "for your lean frame the slim fit stops fabric swamping you" not generic advice
+- ONLY describe pieces in the outfit formula that you are also recommending in recommendedPieces — do not describe a harrington jacket in the formula then fail to include one in the picks. If you mention it, pick it. If you cannot find it in the product list, do not mention it in the formula
 
 TONE — CRITICAL:
 - Write like a real person talking, not a document being generated
@@ -776,18 +778,26 @@ async function buildOccasionPDF(content, occasionData, products) {
     doc.rect(PAD, pieceY, IW, CARD_H).fill(CARD);
     doc.rect(PAD, pieceY, IW, CARD_H).strokeColor(BORDER).lineWidth(0.5).stroke();
 
-    // Image — fit inside square, bottom-aligned so shoes/feet aren't cropped
+    // Image — scale to fit within square, bottom-aligned so shoes aren't cropped
     const imgY = pieceY + (CARD_H - IMG_W) / 2;
     if (imageBuffers[i]) {
       try {
         doc.save();
         doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).clip();
-        // Use 'contain' scaling then position at bottom of clip area so product base is visible
-        doc.image(imageBuffers[i], PAD + IMG_PAD, imgY, {
-          fit: [IMG_W, IMG_W],
-          align: 'center',
-          valign: 'bottom',
-        });
+
+        // Get image dimensions to calculate scale manually
+        const imgData = imageBuffers[i];
+        // Scale to fit within IMG_W x IMG_W preserving aspect ratio
+        // We use cover but shift the image upward so the bottom (product) is always visible
+        // PDFKit cover crops from centre — instead we scale to width and anchor bottom
+        const tempImg = doc.openImage(imgData);
+        const iw = tempImg.width, ih = tempImg.height;
+        const scale = Math.max(IMG_W / iw, IMG_W / ih);
+        const sw = iw * scale, sh = ih * scale;
+        // Bottom-align: if image is taller than box, show bottom portion
+        const sx = PAD + IMG_PAD + (IMG_W - sw) / 2;
+        const sy = imgY + IMG_W - sh; // bottom-align
+        doc.image(imgData, sx, sy, { width: sw, height: sh });
         doc.restore();
       } catch { doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).fill(CARD2); }
     } else {
