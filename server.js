@@ -754,22 +754,26 @@ async function buildOccasionPDF(content, occasionData, products) {
 
   const allProductItems = Object.values(products).flat();
 
-  const imageBuffers = await Promise.all(pieces.map(async piece => {
+  // Fetch images sequentially with a small delay to avoid CDN rate limiting
+  const imageBuffers = [];
+  for (const piece of pieces) {
     const match = allProductItems.find(p => p['Item Name'] === piece.name);
-    if (!match?.['Image URL']) return null;
+    if (!match?.['Image URL']) { imageBuffers.push(null); continue; }
     try {
       const r = await axios.get(match['Image URL'], {
         responseType: 'arraybuffer',
-        timeout: 5000,
+        timeout: 8000,
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Referer': 'https://www.zara.com/',
+          'Referer': 'https://www.asos.com/',
           'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
         },
       });
-      return Buffer.from(r.data);
-    } catch { return null; }
-  }));
+      imageBuffers.push(Buffer.from(r.data));
+    } catch { imageBuffers.push(null); }
+    // Small delay between requests to avoid CDN rate limiting
+    await new Promise(res => setTimeout(res, 150));
+  }
 
   const IMG_W = 68, IMG_PAD = 8;
   let pieceY = 148;
