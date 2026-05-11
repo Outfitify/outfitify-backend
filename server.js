@@ -785,7 +785,7 @@ async function buildOccasionPDF(content, occasionData, products) {
     const whyH = doc.heightOfString(piece.why || '', { width: textW, lineGap: 1.5 });
     const CARD_H = Math.max(IMG_W + 16, 18 + nameH + 8 + whyH + 14); // top pad + name + gap + why + bottom pad
 
-    if (pieceY + CARD_H > PH - 220) break;
+    if (pieceY + CARD_H > PH - 100) break;
 
     doc.rect(PAD, pieceY, IW, CARD_H).fill(CARD);
     doc.rect(PAD, pieceY, IW, CARD_H).strokeColor(BORDER).lineWidth(0.5).stroke();
@@ -804,7 +804,7 @@ async function buildOccasionPDF(content, occasionData, products) {
           valign: 'top',
         });
         doc.restore();
-      } catch { doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).fill(CARD2); }
+      } catch { doc.restore(); doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).fill(CARD2); }
     } else {
       doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).fill(CARD2);
     }
@@ -882,13 +882,13 @@ async function buildOccasionPDF(content, occasionData, products) {
     });
   }
 
-  if (completeYourLook.length > 0 && pieceY + 20 < PH - 220) {
+  if (completeYourLook.length > 0 && pieceY + 20 < PH - 100) {
     const cylY = pieceY + 12;
     sectionLabel('COMPLETE YOUR LOOK', cylY, GREEN);
     let cylCurY = cylY + 20;
 
     completeYourLook.forEach(item => {
-      if (cylCurY + 72 > PH - 220) return;
+      if (cylCurY + 72 > PH - 100) return;
       const cardH = Math.max(72, textH(item.guidance, 9, 'Helvetica', IW - 28) + 36);
       doc.rect(PAD, cylCurY, IW, cardH).fill(CARD2);
       doc.rect(PAD, cylCurY, 2, cardH).fill(GREEN);
@@ -904,10 +904,17 @@ async function buildOccasionPDF(content, occasionData, products) {
 
   // WHERE TO SHOP YOURSELF
   const ws = content.whereToShop;
-  // Guard: only render section if there is enough room for the label + at least one item
-  if (ws && pieceY + 80 < PH - 60) {
+  if (ws) {
+    // If not enough room on current page, start a new page
+    const wsNeeded = 80; // minimum space needed for section label + one item
+    if (pieceY + wsNeeded >= PH - 60) {
+      footer();
+      doc.addPage();
+      bg();
+      pageHeader('If Our Picks Are Not Quite Right');
+      pieceY = 50;
+    }
     const shopY = pieceY + 16;
-    // Additional guard: don't render label if it would be below the safe area
     if (shopY + 20 < PH - 60) {
       sectionLabel('IF OUR PICKS ARE NOT QUITE RIGHT', shopY);
     }
@@ -957,6 +964,7 @@ async function buildOccasionPDF(content, occasionData, products) {
         // Render label and avoid text separately to avoid cursor drift from characterSpacing
         doc.fontSize(7).fillColor(RED).font('Helvetica-Bold')
           .text('AVOID WHEN SHOPPING:', PAD + 14, wsY + 12);
+        // widthOfString must be called while font is still set to Helvetica-Bold
         const avoidLabelW = doc.widthOfString('AVOID WHEN SHOPPING:');
         doc.fontSize(7).fillColor(MUTED).font('Helvetica')
           .text(' ' + ws.avoid, PAD + 14 + avoidLabelW, wsY + 12, { width: IW - 28 - avoidLabelW, lineBreak: true });
