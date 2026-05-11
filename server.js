@@ -581,7 +581,7 @@ Respond with JSON only, no markdown:
   "openingNote": "2-3 sentences written like a personal note — acknowledge their specific occasion detail, what the goal is, what you are giving them. Warm and direct.",
   "whatToWear": {
     "headline": "One punchy sentence summarising the outfit direction including the layer",
-    "outfitFormula": "3-4 sentences describing the complete outfit top to bottom including the jacket or layer — specific colours, specific fits, how pieces work together, and why it works for their build. No jargon.",
+    "outfitFormula": "3-4 sentences describing the complete outfit top to bottom — specific colours, specific fits, how pieces work together, and why it works for their build. Only describe pieces you are also recommending in picks. No jargon.",
     "fitAdvice": "2 sentences of specific fit advice for their build — what to look for when trying things on and what to avoid. Name specific fit issues relevant to their build."
   },
   "whatToAvoid": "2-3 specific things to avoid for this occasion and build — written like a friend telling them honestly. Name specific items or fits not just categories.",
@@ -782,26 +782,19 @@ async function buildOccasionPDF(content, occasionData, products) {
     doc.rect(PAD, pieceY, IW, CARD_H).fill(CARD);
     doc.rect(PAD, pieceY, IW, CARD_H).strokeColor(BORDER).lineWidth(0.5).stroke();
 
-    // Image — scale to fit within square, bottom-aligned so shoes aren't cropped
+    // Image — cover crop anchored to top-center so product is visible
     const imgY = pieceY + (CARD_H - IMG_W) / 2;
     if (imageBuffers[i]) {
       try {
         doc.save();
         doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).clip();
-
-        // Get image dimensions to calculate scale manually
-        const imgData = imageBuffers[i];
-        // Scale to fit within IMG_W x IMG_W preserving aspect ratio
-        // We use cover but shift the image upward so the bottom (product) is always visible
-        // PDFKit cover crops from centre — instead we scale to width and anchor bottom
-        const tempImg = doc.openImage(imgData);
-        const iw = tempImg.width, ih = tempImg.height;
-        const scale = Math.max(IMG_W / iw, IMG_W / ih);
-        const sw = iw * scale, sh = ih * scale;
-        // Bottom-align: if image is taller than box, show bottom portion
-        const sx = PAD + IMG_PAD + (IMG_W - sw) / 2;
-        const sy = imgY + IMG_W - sh; // bottom-align
-        doc.image(imgData, sx, sy, { width: sw, height: sh });
+        doc.image(imageBuffers[i], PAD + IMG_PAD, imgY, {
+          width: IMG_W,
+          height: IMG_W,
+          cover: [IMG_W, IMG_W],
+          align: 'center',
+          valign: 'top',
+        });
         doc.restore();
       } catch { doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).fill(CARD2); }
     } else {
@@ -815,10 +808,10 @@ async function buildOccasionPDF(content, occasionData, products) {
     const nameY = catY + 12;
     doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold')
       .text((piece.category || '').toUpperCase(), tx, catY, { width: textW, lineBreak: false, characterSpacing: 1.5 });
-    doc.fontSize(11).fillColor(productUrl ? GREEN : WHITE).font('Helvetica-Bold')
-      .text(piece.name || '', tx, nameY, { width: textW, ...(productUrl ? { link: productUrl, underline: true } : {}) });
+    doc.fontSize(11).fillColor(productUrl ? GREEN : WHITE).font('Helvetica-Bold');
     const actualNameH = doc.heightOfString(piece.name || '', { width: textW });
     const whyY = nameY + actualNameH + 6;
+    doc.text(piece.name || '', tx, nameY, { width: textW, ...(productUrl ? { link: productUrl, underline: true } : {}) });
     doc.fontSize(8.5).fillColor(GREY).font('Helvetica')
       .text(piece.why || '', tx, whyY, { width: textW, lineGap: 1.5 });
 
@@ -846,6 +839,10 @@ async function buildOccasionPDF(content, occasionData, products) {
   const hasJacket  = [...pickedCategories].some(c => c.includes('jacket') || c === 'hoodie/jacket');
 
   const completeYourLook = [];
+
+  // Log if mandatory categories missing — prompt should prevent this but log for debugging
+  if (!hasTop)     console.warn(`[CYL] WARNING: No Top in recommendedPieces for session — Claude may have failed mandatory rule`);
+  if (!hasBottoms) console.warn(`[CYL] WARNING: No Bottoms in recommendedPieces for session — Claude may have failed mandatory rule`);
 
   if (!hasShoes) {
     completeYourLook.push({
@@ -884,7 +881,7 @@ async function buildOccasionPDF(content, occasionData, products) {
 
     completeYourLook.forEach(item => {
       if (cylCurY + 72 > PH - 220) return;
-      const cardH = Math.max(72, textH(item.guidance, 9, 'Helvetica', IW - 60) + 36);
+      const cardH = Math.max(72, textH(item.guidance, 9, 'Helvetica', IW - 28) + 36);
       doc.rect(PAD, cylCurY, IW, cardH).fill(CARD2);
       doc.rect(PAD, cylCurY, 2, cardH).fill(GREEN);
       doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold')
@@ -925,20 +922,37 @@ async function buildOccasionPDF(content, occasionData, products) {
 
     if (wsY + 48 < PH - 60) {
       const hw = (IW - 8) / 2;
-      doc.rect(PAD, wsY, hw, 48).fill(CARD); doc.rect(PAD, wsY, 2, 48).fill(GREEN);
-      doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold').text('BRANDS TO CONSIDER', PAD + 14, wsY + 8, { characterSpacing: 2 });
-      doc.fontSize(8.5).fillColor(MUTED).font('Helvetica').text(ws.brandsToConsider || '', PAD + 14, wsY + 22, { width: hw - 28 });
-      const col2x = PAD + hw + 8;
-      doc.rect(col2x, wsY, hw, 48).fill(CARD); doc.rect(col2x, wsY, 2, 48).fill(GREEN);
-      doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold').text('PRICE GUIDANCE', col2x + 14, wsY + 8, { characterSpacing: 2 });
-      doc.fontSize(8.5).fillColor(MUTED).font('Helvetica').text(ws.priceGuidance || '', col2x + 14, wsY + 22, { width: hw - 28 });
-      wsY += 56;
+      doc.fontSize(8.5).font('Helvetica');
+      const brandsH = Math.max(48, doc.heightOfString(ws.brandsToConsider || '', { width: hw - 28 }) + 28);
+      const priceH  = Math.max(48, doc.heightOfString(ws.priceGuidance  || '', { width: hw - 28 }) + 28);
+      const infoCardH = Math.max(brandsH, priceH);
+      if (wsY + infoCardH < PH - 60) {
+        doc.rect(PAD, wsY, hw, infoCardH).fill(CARD); doc.rect(PAD, wsY, 2, infoCardH).fill(GREEN);
+        doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold').text('BRANDS TO CONSIDER', PAD + 14, wsY + 8, { characterSpacing: 2 });
+        doc.fontSize(8.5).fillColor(MUTED).font('Helvetica').text(ws.brandsToConsider || '', PAD + 14, wsY + 22, { width: hw - 28 });
+        const col2x = PAD + hw + 8;
+        doc.rect(col2x, wsY, hw, infoCardH).fill(CARD); doc.rect(col2x, wsY, 2, infoCardH).fill(GREEN);
+        doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold').text('PRICE GUIDANCE', col2x + 14, wsY + 8, { characterSpacing: 2 });
+        doc.fontSize(8.5).fillColor(MUTED).font('Helvetica').text(ws.priceGuidance || '', col2x + 14, wsY + 22, { width: hw - 28 });
+        wsY += infoCardH + 8;
+      }
     }
 
-    if (ws.avoid && wsY + 36 < PH - 60) {
-      doc.rect(PAD, wsY, IW, 36).fill(CARD2); doc.rect(PAD, wsY, 2, 36).fill(RED);
-      doc.fontSize(7).fillColor(RED).font('Helvetica-Bold').text('AVOID WHEN SHOPPING:  ', PAD + 14, wsY + 12, { continued: true, characterSpacing: 1 });
-      doc.fontSize(7).fillColor(MUTED).font('Helvetica').text(ws.avoid, { lineBreak: false });
+    if (ws.avoid) {
+      doc.fontSize(7).font('Helvetica');
+      const avoidLabel = 'AVOID WHEN SHOPPING:  ';
+      const avoidFullText = avoidLabel + ws.avoid;
+      const avoidCardH = Math.max(36, doc.heightOfString(avoidFullText, { width: IW - 28 }) + 20);
+      if (wsY + avoidCardH < PH - 28) {
+        doc.rect(PAD, wsY, IW, avoidCardH).fill(CARD2);
+        doc.rect(PAD, wsY, 2, avoidCardH).fill(RED);
+        // Render label and avoid text separately to avoid cursor drift from characterSpacing
+        doc.fontSize(7).fillColor(RED).font('Helvetica-Bold')
+          .text('AVOID WHEN SHOPPING:', PAD + 14, wsY + 12);
+        const avoidLabelW = doc.widthOfString('AVOID WHEN SHOPPING:');
+        doc.fontSize(7).fillColor(MUTED).font('Helvetica')
+          .text(' ' + ws.avoid, PAD + 14 + avoidLabelW, wsY + 12, { width: IW - 28 - avoidLabelW, lineBreak: true });
+      }
     }
   }
 
