@@ -455,7 +455,8 @@ DATE NIGHT RULES:
 - NO graphic tees or logo-heavy pieces
 - Shoes must be clean and considered — leather shoes, loafers or clean minimal court trainers only
 - Smart casual minimum — chinos, dark jeans, clean shirts, quality basics
-- occasionDetail2 is whether they have met this person before — calibrate effort accordingly (first time = slightly more considered, been together a while = relaxed confidence)`,
+- LAYERING: For restaurant dates always recommend a jacket layer — an unstructured blazer or lightweight jacket worn open over the shirt. This is what separates looking nice from looking like you put actual thought in. Only skip the jacket for very casual dates (drinks, coffee)
+- occasionDetail2 is whether they have met this person before — first time = slightly more considered and sharp; been together a while = relaxed confidence but still put together`,
 
     'job-interview': `
 JOB INTERVIEW RULES:
@@ -463,46 +464,55 @@ JOB INTERVIEW RULES:
 - NO casual t-shirts, hoodies, joggers or sportswear under any circumstances
 - NO loud colours, bold patterns or graphics
 - Smart trousers, chinos, shirts, blazers, formal or clean minimal leather shoes only
-- occasionDetail is the industry — corporate = sharper, creative = smarter casual
-- occasionDetail2 is seniority — entry level can be smart casual, senior/management should be noticeably sharper`,
+- LAYERING: Always recommend a blazer or jacket layer for interviews — it is almost never wrong and signals you take it seriously
+- occasionDetail is the industry — corporate = sharper and more formal, creative = smarter casual with personality
+- occasionDetail2 is seniority — entry level can be smart casual, mid level should have a blazer, senior or management should be noticeably sharper and more considered`,
 
     'festival': `
-FESTIVAL / SUMMER RULES:
+FESTIVAL RULES:
 - NO joggers, formal trousers, heavy denim, thick knitwear, suits or formal shoes
 - NO dark heavy fabrics — no thick black cotton, wool or heavyweight items
 - Lightweight fabrics only — linen, lightweight cotton, jersey
 - Shorts, linen trousers, lightweight t-shirts, light shirts, trainers, canvas shoes, sandals only
+- LAYERING: For multi-day festivals always recommend a lightweight shirt worn open over a tee — festival evenings get cold and having a layer is practical and looks good. Keep it lightweight — nothing heavy
 - occasionDetail is what they are dressing for — use it to set the tone
-- occasionDetail2 is duration — multi-day means practical layering matters more`,
+- occasionDetail2 is duration — multi-day means practical layering matters more, one day means you can keep it simpler`,
 
     'wedding-guest': `
 WEDDING GUEST RULES:
 - NO sportswear, trainers, casual t-shirts, hoodies or joggers under any circumstances
 - Smart and occasion-appropriate always
-- occasionDetail is dress code — match formality accordingly
-- occasionDetail2 is suit ownership: if they own a good one advise on styling it; if old/cheap advise upgrading key pieces; if no suit advise on smart trousers and blazer`,
+- LAYERING: Always recommend a jacket or blazer — it is a wedding, showing up without one reads underdressed
+- occasionDetail is dress code — match formality accordingly. Black tie = suit or tuxedo. Smart or lounge suit = full suit. Smart casual = blazer and smart trousers minimum. Garden party = blazer or unstructured jacket
+- occasionDetail2 is suit ownership: if they own a good one advise on how to style and accessorise it; if old or cheap advise on which pieces to upgrade first (shirt, shoes, or tie); if no suit at all advise on smart trousers and a blazer as the alternative`,
 
     'night-out': `
 NIGHT OUT RULES:
-- occasionDetail is venue type — casual bars: smart casual, clean trainers ok; club: smarter, no sportswear; restaurant then bars: smart casual minimum no trainers; house party: relaxed but considered
-- occasionDetail2 is time of night — all day session means practical and comfortable throughout; late start means sharp from the off
+- occasionDetail is venue type — use it to set formality level:
+  - Casual bars: smart casual, clean trainers fine
+  - Club night: smarter, dark jeans or trousers, clean shoes, no sportswear
+  - Restaurant then bars: smart casual minimum, no trainers, consider a jacket layer
+  - House party: relaxed but considered, clean trainers fine
+- LAYERING: For restaurant then bars always recommend a jacket layer. For club nights a bomber or lightweight jacket works. For casual bars optional
+- occasionDetail2 is time — all day session needs something practical and comfortable that holds up; late start means sharp from the off
 - No formal suits unless venue is explicitly black tie
 - No sportswear or gym wear ever`,
 
     'smart-casual-work': `
 SMART CASUAL WORK RULES:
 - NO sportswear, gym wear, hoodies or joggers ever
-- occasionDetail and occasionDetail2 are both about work location — office needs sharper, WFH can be slightly more relaxed
+- LAYERING: For office or hybrid always recommend a jacket or smart overshirt layer — it immediately makes the look more considered and gives them something to take off
+- occasionDetail and occasionDetail2 are both about work location — office full time needs the sharpest look, hybrid is slightly more relaxed, WFH with occasional office days can be the most relaxed but still needs to look intentional on camera
 - Chinos, smart trousers, shirts, smart casual jackets, clean shoes always`,
 
     'summer-holiday': `
 SUMMER HOLIDAY RULES:
 - NO formal trousers, suits, heavy fabrics, thick denim or formal shoes
 - Lightweight and practical but still looks good
-- occasionDetail is destination type — beach/resort vs city break vs long-haul all need different approaches
-- occasionDetail2 is trip length — longer trips need more versatile pieces that can be mixed and matched
-- Shorts, linen trousers, lightweight t-shirts, lightweight shirts, trainers, sandals, canvas shoes only
-- Light layers for evening but nothing heavy`,
+- LAYERING: Recommend one lightweight shirt or overshirt for evenings — even on hot holidays the temperature drops after dinner and having a layer means you are not stuck in a t-shirt all night
+- occasionDetail is destination — beach or resort = shorts and tees and sandals; city break = slightly smarter, linen trousers, clean trainers; long-haul = comfort for travel plus versatile pieces
+- occasionDetail2 is trip length — longer trips need more versatile pieces that work across multiple outfits, not one-wear pieces
+- Shorts, linen trousers, lightweight t-shirts, lightweight shirts, trainers, sandals, canvas shoes only`,
 
     'holiday-travel': `
 HOLIDAY / TRAVEL RULES:
@@ -531,13 +541,34 @@ GENERAL RULES FOR ALL OCCASIONS:
 - Never recommend joggers, gym wear or sportswear unless the occasion explicitly calls for it
 - Always ask: would a real stylist actually suggest this for this specific person and occasion?
 
+LAYERING RULE — CRITICAL:
+- Every occasion except very casual ones needs a jacket or layer in the outfit formula
+- The layer is what makes an outfit look considered rather than just clothes thrown on
+- Always include the layer in the outfitFormula description even if you do not have a product for it in the picks
+- Describe what type of layer works — unstructured blazer, lightweight jacket, bomber, lightweight shirt worn open — and why it works for this build
+
+WHY TEXT RULES — CRITICAL:
+- Every "why" field must mention the person's specific build and why this product works for it
+- Never write a generic why that could apply to any person — e.g. "loafers show you made an effort" is wrong
+- Correct format: "[specific detail about the product] works for [their build] because [specific reason tied to their body]"
+- Example good why: "Super slim fit means the fabric follows your frame without billowing — black keeps the colour palette clean for a restaurant setting"
+- Example bad why: "A great choice for date night that shows you made an effort"
+- Include specific colour, fit detail, or fabric detail in every why
+
+OUTFIT FORMULA RULES — CRITICAL:
+- Must include specific colours not just categories — say "dark navy slim chinos" not just "chinos"
+- Must include how pieces work together — say "the dark bottom half keeps the eye up toward the face" not just "wear chinos with a shirt"
+- Must include the layer and how to wear it — open, buttoned, sleeves rolled, etc
+- Must reference their specific build — say "for your lean frame the slim fit stops fabric swamping you" not generic advice
+
 TONE — CRITICAL:
 - Write like a real person talking, not a document being generated
 - Direct, warm and specific — like advice from a knowledgeable friend
-- Never use: system, intentional, cohesive, silhouette, taper, tapered, aesthetic, palette, framework, elevate, curated, layering piece, overshirt
-- Replace fashion jargon with plain English at all times
+- BANNED WORDS — never use any of these under any circumstances: system, intentional, cohesive, silhouette, taper, tapered, aesthetic, palette, framework, elevate, curated, layering piece, overshirt, game changer, key pieces, wardrobe staples, effortless, timeless
+- Replace any fashion jargon with plain English at all times
 - Every sentence must be specific to this person's occasion, build and budget
 - Short punchy sentences, no waffle
+- SELF-CHECK: Before returning your response, re-read every field and replace any banned word you find. There are no exceptions.
 
 AVAILABLE PRODUCTS — only recommend products from this exact list:
 ${JSON.stringify(productList, null, 2)}
@@ -547,12 +578,12 @@ Respond with JSON only, no markdown:
   "occasionTitle": "Short punchy title e.g. Your Date Night Look",
   "openingNote": "2-3 sentences written like a personal note — acknowledge their specific occasion detail, what the goal is, what you are giving them. Warm and direct.",
   "whatToWear": {
-    "headline": "One punchy sentence summarising the outfit direction",
-    "outfitFormula": "3-4 sentences describing the complete outfit top to bottom in plain English — specific to their build and occasion. No jargon.",
-    "fitAdvice": "2 sentences of specific fit advice for their build — what to look for and what to avoid when trying things on."
+    "headline": "One punchy sentence summarising the outfit direction including the layer",
+    "outfitFormula": "3-4 sentences describing the complete outfit top to bottom including the jacket or layer — specific colours, specific fits, how pieces work together, and why it works for their build. No jargon.",
+    "fitAdvice": "2 sentences of specific fit advice for their build — what to look for when trying things on and what to avoid. Name specific fit issues relevant to their build."
   },
-  "whatToAvoid": "2-3 specific things to avoid for this occasion and build — written like a friend telling them honestly. Specific not generic.",
-  "stylistTip": "One insider tip most people do not know — specific to this occasion. Should feel like a genuine secret.",
+  "whatToAvoid": "2-3 specific things to avoid for this occasion and build — written like a friend telling them honestly. Name specific items or fits not just categories.",
+  "stylistTip": "One insider tip most people do not know — specific to this occasion and this build. Should feel like a genuine secret, not generic advice.",
   "recommendedPieces": [
     {
       "category": "category name",
@@ -560,19 +591,19 @@ Respond with JSON only, no markdown:
       "brand": "brand",
       "price": "£XX",
       "url": "exact url from the list",
-      "why": "One sentence — why this piece works for their occasion and build"
+      "why": "One sentence — must mention their specific build and why this exact product works for it. Include colour or fit detail."
     }
   ],
   "whereToShop": {
     "intro": "One sentence — if our picks are not quite right here is exactly what to look for",
     "searchTerms": [
-      { "site": "ASOS", "search": "exact search term to use", "whatToLookFor": "specific fabric, fit or feature to check" },
+      { "site": "ASOS", "search": "exact search term to use on ASOS", "whatToLookFor": "specific fabric, fit detail or feature to check on the product page" },
       { "site": "Zara", "search": "exact search term", "whatToLookFor": "what to check" },
       { "site": "H&M", "search": "exact search term", "whatToLookFor": "what to check" }
     ],
-    "brandsToConsider": "2-3 specific brands suited to this occasion and budget",
-    "priceGuidance": "What to expect to pay per category at their budget level",
-    "avoid": "One sentence — what to avoid when shopping independently for this occasion"
+    "brandsToConsider": "2-3 specific brands suited to this occasion and budget — not generic, explain briefly why each one",
+    "priceGuidance": "What to expect to pay per category at their budget level — be specific with ranges",
+    "avoid": "One sentence — what to avoid when shopping independently for this occasion and this build"
   }
 }
 
@@ -580,7 +611,8 @@ Rules:
 - JSON only, no markdown
 - recommendedPieces: 2-3 items only — only include products that genuinely suit the occasion
 - Only use products from the list — do not invent products
-- Every field must be specific to the occasion and their answers`;
+- Every field must be specific to the occasion and their answers
+- Re-read your output before returning it and remove any banned words`;
 
   let parsed = null;
   let lastError = null;
@@ -725,26 +757,63 @@ async function buildOccasionPDF(content, occasionData, products) {
     } catch { return null; }
   }));
 
-  const CARD_H = 80, IMG_W = 68, IMG_PAD = 8;
+  const IMG_W = 68, IMG_PAD = 8;
   let pieceY = 148;
 
   for (let i = 0; i < pieces.length; i++) {
     const piece = pieces[i];
-    if (pieceY + CARD_H > PH - 280) break;
     const tx = PAD + IMG_PAD + IMG_W + 12, priceColX = PAD + IW - 90, textW = priceColX - tx - 8;
+
+    // Calculate dynamic card height based on actual name + why text height
+    doc.fontSize(11).font('Helvetica-Bold');
+    const nameH = doc.heightOfString(piece.name || '', { width: textW });
+    doc.fontSize(8.5).font('Helvetica');
+    const whyH = doc.heightOfString(piece.why || '', { width: textW, lineGap: 1.5 });
+    const CARD_H = Math.max(IMG_W + 16, 18 + nameH + 8 + whyH + 14); // top pad + name + gap + why + bottom pad
+
+    if (pieceY + CARD_H > PH - 280) break;
+
     doc.rect(PAD, pieceY, IW, CARD_H).fill(CARD);
     doc.rect(PAD, pieceY, IW, CARD_H).strokeColor(BORDER).lineWidth(0.5).stroke();
+
+    // Image — fit inside square, bottom-aligned so shoes/feet aren't cropped
     const imgY = pieceY + (CARD_H - IMG_W) / 2;
     if (imageBuffers[i]) {
-      try { doc.save(); doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).clip(); doc.image(imageBuffers[i], PAD + IMG_PAD, imgY, { width: IMG_W, height: IMG_W, cover: [IMG_W, IMG_W] }); doc.restore(); }
-      catch { doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).fill(CARD2); }
-    } else { doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).fill(CARD2); }
+      try {
+        doc.save();
+        doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).clip();
+        // Use 'contain' scaling then position at bottom of clip area so product base is visible
+        doc.image(imageBuffers[i], PAD + IMG_PAD, imgY, {
+          fit: [IMG_W, IMG_W],
+          align: 'center',
+          valign: 'bottom',
+        });
+        doc.restore();
+      } catch { doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).fill(CARD2); }
+    } else {
+      doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).fill(CARD2);
+    }
+
     const productUrl = piece.url || allProductItems.find(p => p['Item Name'] === piece.name)?.['Product URL'] || null;
-    doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold').text((piece.category || '').toUpperCase(), tx, pieceY + 10, { width: textW, lineBreak: false, characterSpacing: 1.5 });
-    doc.fontSize(11).fillColor(productUrl ? GREEN : WHITE).font('Helvetica-Bold').text(piece.name || '', tx, pieceY + 24, { width: textW, lineBreak: false, ...(productUrl ? { link: productUrl, underline: true } : {}) });
-    doc.fontSize(8.5).fillColor(GREY).font('Helvetica').text(piece.why || '', tx, pieceY + 42, { width: textW, lineGap: 1.5 });
-    doc.fontSize(16).fillColor(GREEN).font('Helvetica-Bold').text(piece.price || '', priceColX, pieceY + 16, { width: 88, align: 'right', lineBreak: false, ...(productUrl ? { link: productUrl } : {}) });
-    doc.fontSize(8).fillColor(GREY).font('Helvetica').text(piece.brand || '', priceColX, pieceY + 38, { width: 88, align: 'right', lineBreak: false });
+
+    // Text — category label, then name, then why — all with correct vertical spacing
+    const catY  = pieceY + 10;
+    const nameY = catY + 12;
+    doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold')
+      .text((piece.category || '').toUpperCase(), tx, catY, { width: textW, lineBreak: false, characterSpacing: 1.5 });
+    doc.fontSize(11).fillColor(productUrl ? GREEN : WHITE).font('Helvetica-Bold')
+      .text(piece.name || '', tx, nameY, { width: textW, ...(productUrl ? { link: productUrl, underline: true } : {}) });
+    const actualNameH = doc.heightOfString(piece.name || '', { width: textW });
+    const whyY = nameY + actualNameH + 6;
+    doc.fontSize(8.5).fillColor(GREY).font('Helvetica')
+      .text(piece.why || '', tx, whyY, { width: textW, lineGap: 1.5 });
+
+    // Price + brand — right column, vertically centred in card
+    doc.fontSize(16).fillColor(GREEN).font('Helvetica-Bold')
+      .text(piece.price || '', priceColX, pieceY + (CARD_H / 2) - 18, { width: 88, align: 'right', lineBreak: false, ...(productUrl ? { link: productUrl } : {}) });
+    doc.fontSize(8).fillColor(GREY).font('Helvetica')
+      .text(piece.brand || '', priceColX, pieceY + (CARD_H / 2) + 4, { width: 88, align: 'right', lineBreak: false });
+
     pieceY += CARD_H + 6;
   }
 
