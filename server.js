@@ -611,7 +611,11 @@ Respond with JSON only, no markdown:
 
 Rules:
 - JSON only, no markdown
-- recommendedPieces: 2-3 items only — only include products that genuinely suit the occasion
+- Top and Bottoms are MANDATORY — always include at least one Top and one Bottoms pick. If you cannot find a suitable product in either category the guide fails. These two are non-negotiable
+- Shoes — always include if a suitable product exists in the list. If no suitable shoe exists for the occasion, omit it — the PDF will show a "Complete Your Look" tip instead
+- Jacket or layer — include if the occasion warrants it (Date Night, Job Interview, Wedding Guest, Night Out, Smart Casual Work) and a suitable product exists. If none exists, omit — the PDF will handle it
+- Festival and Summer Holiday — jacket is optional, only include if genuinely appropriate
+- Never describe a piece in the outfitFormula without picking it, and never pick a piece without describing it in the formula
 - Only use products from the list — do not invent products
 - Every field must be specific to the occasion and their answers
 - Re-read your output before returning it and remove any banned words`;
@@ -742,7 +746,7 @@ async function buildOccasionPDF(content, occasionData, products) {
   doc.rect(0, 40, PW, 90).fill('#0E0C0A');
   doc.moveTo(0, 130).lineTo(PW, 130).strokeColor(BORDER).lineWidth(0.5).stroke();
 
-  const pieces = (content.recommendedPieces || []).slice(0, 3);
+  const pieces = (content.recommendedPieces || []).slice(0, 4);
   doc.fontSize(24).fillColor(WHITE).font('Helvetica-Bold').text('HAND-PICKED', PAD, 52);
   doc.fontSize(24).fillColor(GREEN).font('Helvetica-Bold').text('FOR THIS OCCASION', PAD, 80);
   doc.fontSize(9).fillColor(GREY).font('Helvetica-Oblique')
@@ -773,7 +777,7 @@ async function buildOccasionPDF(content, occasionData, products) {
     const whyH = doc.heightOfString(piece.why || '', { width: textW, lineGap: 1.5 });
     const CARD_H = Math.max(IMG_W + 16, 18 + nameH + 8 + whyH + 14); // top pad + name + gap + why + bottom pad
 
-    if (pieceY + CARD_H > PH - 280) break;
+    if (pieceY + CARD_H > PH - 220) break;
 
     doc.rect(PAD, pieceY, IW, CARD_H).fill(CARD);
     doc.rect(PAD, pieceY, IW, CARD_H).strokeColor(BORDER).lineWidth(0.5).stroke();
@@ -827,14 +831,84 @@ async function buildOccasionPDF(content, occasionData, products) {
     pieceY += CARD_H + 6;
   }
 
+  // COMPLETE YOUR LOOK — cards for any missing required categories
+  const JACKET_OCCASIONS = ['date-night', 'job-interview', 'wedding-guest', 'night-out', 'smart-casual-work'];
+  const jacketRequired = JACKET_OCCASIONS.includes(occasionData.occasion);
+
+  const pickedCategories = new Set(
+    (content.recommendedPieces || []).map(p => (p.category || '').toLowerCase())
+  );
+
+  // Normalise category names from picks to match check keys
+  const hasTop     = [...pickedCategories].some(c => c === 'top');
+  const hasBottoms = [...pickedCategories].some(c => c === 'bottoms');
+  const hasShoes   = [...pickedCategories].some(c => c === 'shoes');
+  const hasJacket  = [...pickedCategories].some(c => c.includes('jacket') || c === 'hoodie/jacket');
+
+  const completeYourLook = [];
+
+  if (!hasShoes) {
+    completeYourLook.push({
+      category: 'Shoes',
+      tip: content.whereToShop?.searchTerms?.find(t => /shoe|loafer|trainer|boot/i.test(t.search))?.search || null,
+      guidance: `Search for shoes that match the occasion — for ${occasionData.occasionName}, look for ${
+        ['date-night','wedding-guest','job-interview'].includes(occasionData.occasion)
+          ? 'leather loafers, Oxford shoes or clean minimal leather trainers'
+          : ['night-out'].includes(occasionData.occasion)
+          ? 'Chelsea boots, clean leather trainers or smart loafers'
+          : ['festival','summer-holiday'].includes(occasionData.occasion)
+          ? 'canvas shoes, clean trainers or sandals'
+          : 'clean smart shoes suited to the occasion'
+      }. Avoid anything overly casual or worn-looking.`,
+    });
+  }
+
+  if (jacketRequired && !hasJacket) {
+    completeYourLook.push({
+      category: 'Jacket / Layer',
+      tip: null,
+      guidance: `A jacket layer is the difference between looking nice and looking considered for ${occasionData.occasionName}. Look for ${
+        ['job-interview','wedding-guest'].includes(occasionData.occasion)
+          ? 'an unstructured blazer in navy or charcoal — single breasted, slim or regular fit'
+          : ['date-night','night-out'].includes(occasionData.occasion)
+          ? 'a harrington jacket, bomber or unstructured blazer worn open over the shirt'
+          : 'a smart casual jacket or overshirt that sits over your top without adding bulk'
+      }. Brands to check: ASOS Design, Jack & Jones Premium, River Island.`,
+    });
+  }
+
+  if (completeYourLook.length > 0 && pieceY + 20 < PH - 220) {
+    const cylY = pieceY + 12;
+    sectionLabel('COMPLETE YOUR LOOK', cylY, GREEN);
+    let cylCurY = cylY + 20;
+
+    completeYourLook.forEach(item => {
+      if (cylCurY + 72 > PH - 220) return;
+      const cardH = Math.max(72, textH(item.guidance, 9, 'Helvetica', IW - 60) + 36);
+      doc.rect(PAD, cylCurY, IW, cardH).fill(CARD2);
+      doc.rect(PAD, cylCurY, 2, cardH).fill(GREEN);
+      doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold')
+        .text(item.category.toUpperCase(), PAD + 14, cylCurY + 10, { characterSpacing: 2 });
+      doc.fontSize(9).fillColor(MUTED).font('Helvetica')
+        .text(item.guidance, PAD + 14, cylCurY + 24, { width: IW - 28, lineGap: 2 });
+      cylCurY += cardH + 6;
+    });
+
+    pieceY = cylCurY;
+  }
+
   // WHERE TO SHOP YOURSELF
   const ws = content.whereToShop;
-  if (ws) {
+  // Guard: only render section if there is enough room for the label + at least one item
+  if (ws && pieceY + 80 < PH - 60) {
     const shopY = pieceY + 16;
-    sectionLabel('IF OUR PICKS ARE NOT QUITE RIGHT', shopY);
+    // Additional guard: don't render label if it would be below the safe area
+    if (shopY + 20 < PH - 60) {
+      sectionLabel('IF OUR PICKS ARE NOT QUITE RIGHT', shopY);
+    }
     let wsY = shopY + 20;
 
-    if (ws.intro) {
+    if (ws.intro && wsY < PH - 60) {
       doc.fontSize(9.5).fillColor(MUTED).font('Helvetica').text(ws.intro, PAD, wsY, { width: IW, lineGap: 3 });
       wsY += textH(ws.intro, 9.5, 'Helvetica', IW) + 14;
     }
