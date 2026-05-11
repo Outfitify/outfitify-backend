@@ -133,12 +133,26 @@ async function fetchOccasionProducts(occasion, budget, fit) {
   const fitTier = fitToTier(fit);
   console.log(`[fetchOccasionProducts] budgetTier=${budgetTier} fitTier=${fitTier}`);
 
+  // Map quiz slugs to database Occasion column values
+  const slugToDbOccasion = {
+    'date-night':        'date night',
+    'job-interview':     'job interview',
+    'festival':          'festival',
+    'summer-holiday':    'summer holiday',
+    'wedding-guest':     'wedding',
+    'night-out':         'night out',
+    'smart-casual-work': 'smart casual work',
+    'holiday-travel':    'summer holiday',
+  };
+
   // Occasion: check each comma-separated value against target
+  // Handles slug → DB value mapping so "wedding-guest" matches "Wedding" in sheet
   function matchesOccasion(product, target) {
+    const mappedTarget = slugToDbOccasion[target] || target.toLowerCase();
     return (product['Occasion'] || '')
       .split(',')
       .map(o => o.trim().toLowerCase())
-      .some(o => o === target.toLowerCase());
+      .some(o => o === mappedTarget);
   }
 
   // Fit: "All" matches any build
@@ -452,7 +466,7 @@ JOB INTERVIEW RULES:
 - occasionDetail is the industry — corporate = sharper, creative = smarter casual
 - occasionDetail2 is seniority — entry level can be smart casual, senior/management should be noticeably sharper`,
 
-    'festival-summer': `
+    'festival': `
 FESTIVAL / SUMMER RULES:
 - NO joggers, formal trousers, heavy denim, thick knitwear, suits or formal shoes
 - NO dark heavy fabrics — no thick black cotton, wool or heavyweight items
@@ -480,6 +494,15 @@ SMART CASUAL WORK RULES:
 - NO sportswear, gym wear, hoodies or joggers ever
 - occasionDetail and occasionDetail2 are both about work location — office needs sharper, WFH can be slightly more relaxed
 - Chinos, smart trousers, shirts, smart casual jackets, clean shoes always`,
+
+    'summer-holiday': `
+SUMMER HOLIDAY RULES:
+- NO formal trousers, suits, heavy fabrics, thick denim or formal shoes
+- Lightweight and practical but still looks good
+- occasionDetail is destination type — beach/resort vs city break vs long-haul all need different approaches
+- occasionDetail2 is trip length — longer trips need more versatile pieces that can be mixed and matched
+- Shorts, linen trousers, lightweight t-shirts, lightweight shirts, trainers, sandals, canvas shoes only
+- Light layers for evening but nothing heavy`,
 
     'holiday-travel': `
 HOLIDAY / TRAVEL RULES:
