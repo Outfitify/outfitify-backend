@@ -475,7 +475,11 @@ FESTIVAL RULES:
 - Lightweight fabrics only — linen, lightweight cotton, jersey
 - Shorts, linen trousers, lightweight t-shirts, light shirts, trainers, canvas shoes, sandals only
 - LAYERING: For multi-day festivals always recommend a lightweight shirt worn open over a tee — festival evenings get cold and having a layer is practical and looks good. Keep it lightweight — nothing heavy
-- occasionDetail is what they are dressing for — use it to set the tone
+- occasionDetail is the TYPE of festival — use it to calibrate the look:
+  - Grassroots or indie (muddy fields, camping): practical is key — boots or sturdy trainers, cargo shorts or relaxed trousers, layers
+  - Major festival (Glastonbury, Reading, Leeds): balance of practical and stylish — clean trainers, shorts or slim jeans, lightweight layer
+  - Day festival (no camping, one day): more style-led, less practical — cleaner fits, better footwear, can be slightly smarter
+  - Urban festival (city-based, smarter crowd): closest to a night out — cleaner trainers or boots, smarter shorts or slim trousers
 - occasionDetail2 is duration — multi-day means practical layering matters more, one day means you can keep it simpler`,
 
     'wedding-guest': `
