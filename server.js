@@ -544,6 +544,7 @@ GENERAL RULES FOR ALL OCCASIONS:
 - Better to recommend 2 excellent products than 3 where one is wrong
 - Never recommend joggers, gym wear or sportswear unless the occasion explicitly calls for it
 - Always ask: would a real stylist actually suggest this for this specific person and occasion?
+- COLOUR COORDINATION — CRITICAL: Check that shoe colour works with the bottom half. Blue trainers with blue or dark jeans is a clash — avoid same-family colour combinations between shoes and trousers. For dark outfits (black, navy, dark grey), shoes should be white, black, or a neutral that grounds the look. Never pick a coloured trainer that echoes the trouser colour.
 
 LAYERING RULE — CRITICAL:
 - Every occasion except very casual ones needs a jacket or layer in the outfit formula
