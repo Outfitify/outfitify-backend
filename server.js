@@ -588,7 +588,7 @@ Respond with JSON only, no markdown:
     "outfitFormula": "3-4 sentences describing the complete outfit top to bottom — specific colours, specific fits, how pieces work together, and why it works for their build. Only describe pieces you are also recommending in picks. No jargon.",
     "fitAdvice": "2 sentences of specific fit advice for their build — what to look for when trying things on and what to avoid. Name specific fit issues relevant to their build."
   },
-  "whatToAvoid": "2-3 specific things to avoid for this occasion and build — written like a friend telling them honestly. Name specific items or fits not just categories.",
+  "whatToAvoid": "MANDATORY — 2-3 specific things to avoid for this occasion and build. Written like a friend telling them honestly. Name specific items or fits, not just categories. This field must never be empty.",
   "stylistTip": "One insider tip most people do not know — specific to this occasion and this build. Should feel like a genuine secret, not generic advice.",
   "recommendedPieces": [
     {
@@ -615,6 +615,7 @@ Respond with JSON only, no markdown:
 
 Rules:
 - JSON only, no markdown
+- whatToAvoid is MANDATORY — never return an empty string. Always include 2-3 specific things to avoid for this occasion and build
 - Top and Bottoms are MANDATORY — always include at least one Top and one Bottoms pick. If you cannot find a suitable product in either category the guide fails. These two are non-negotiable
 - Shoes — always include if a suitable product exists in the list. If no suitable shoe exists for the occasion, omit it — the PDF will show a "Complete Your Look" tip instead
 - Jacket or layer — include if the occasion warrants it (Date Night, Job Interview, Wedding Guest, Night Out, Smart Casual Work) and a suitable product exists. If none exists, omit — the PDF will handle it
@@ -722,12 +723,12 @@ async function buildOccasionPDF(content, occasionData, products) {
     curY += fitH + 16;
   }
 
-  if (curY + 60 < PH - 80) {
+  if (curY + 60 < PH - 80 && (content.whatToAvoid || '').trim().length > 10) {
     sectionLabel('WHAT TO AVOID', curY, RED);
     curY += 20;
-    const avoidH = Math.max(textH(content.whatToAvoid || '', 9.5, 'Helvetica', IW - 28) + 28, 52);
+    const avoidH = Math.max(textH(content.whatToAvoid, 9.5, 'Helvetica', IW - 28) + 28, 52);
     lcard(PAD, curY, IW, avoidH, RED);
-    doc.fontSize(9.5).fillColor(MUTED).font('Helvetica').text(content.whatToAvoid || '', PAD + 14, curY + 14, { width: IW - 28, lineGap: 3 });
+    doc.fontSize(9.5).fillColor(MUTED).font('Helvetica').text(content.whatToAvoid, PAD + 14, curY + 14, { width: IW - 28, lineGap: 3 });
     curY += avoidH + 16;
   }
 
