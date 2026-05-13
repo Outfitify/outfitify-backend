@@ -244,10 +244,12 @@ app.post('/api/create-occasion-checkout', async (req, res) => {
 // ── BUNDLE CHECKOUT ───────────────────────────────────────────────────────────
 
 app.post('/api/create-bundle-checkout', async (req, res) => {
-  const { occasions, bundleSize, budget, fit, occasionDetail, occasionDetail2, style, email } = req.body;
+  const { occasions, bundleSize, email } = req.body;
   if (!occasions || !Array.isArray(occasions) || occasions.length < 2 || !email) {
     return res.status(400).json({ error: 'Missing required fields' });
   }
+  // occasions array now contains per-occasion answers:
+  // [{ slug, name, budget, fit, occasionDetail, occasionDetail2, style }, ...]
 
   const size = Math.min(Math.max(parseInt(bundleSize) || occasions.length, 2), 3);
   const priceMap  = { 2: 399, 3: 499 };
@@ -282,11 +284,8 @@ app.post('/api/create-bundle-checkout', async (req, res) => {
       cancel_url: 'https://occasions.outfitify.co.uk',
       metadata: {
         sessionId, tier: 'bundle', bundleSize: String(size),
-        occasions: JSON.stringify(occasions),
-        budget: budget || '', fit: fit || '',
-        occasionDetail: occasionDetail || '',
-        occasionDetail2: occasionDetail2 || '',
-        style: style || '', email,
+        occasions: JSON.stringify(occasions), // full per-occasion answers included
+        email,
       },
     });
     res.json({ url: checkoutSession.url });
@@ -320,14 +319,9 @@ app.post('/webhook', async (req, res) => {
     if (tier === 'bundle') {
       let occasions = [];
       try { occasions = JSON.parse(session.metadata.occasions || '[]'); } catch { /* skip */ }
-      generateBundleReports(sessionId, {
-        occasions,
-        budget:          session.metadata.budget,
-        fit:             session.metadata.fit,
-        occasionDetail:  session.metadata.occasionDetail,
-        occasionDetail2: session.metadata.occasionDetail2,
-        style:           session.metadata.style,
-      }, userEmail).catch(err => console.error(`Bundle error ${sessionId}:`, err));
+      // occasions array contains full per-occasion answers
+      generateBundleReports(sessionId, { occasions }, userEmail)
+        .catch(err => console.error(`Bundle error ${sessionId}:`, err));
 
     } else if (tier === 'occasion') {
       generateOccasionReport(sessionId, {
@@ -400,16 +394,25 @@ async function generateOccasionReport(sessionId, occasionData, userEmail) {
 
 async function generateBundleReports(sessionId, bundleData, userEmail) {
   activeJobs++;
-  const { occasions, budget, fit, occasionDetail, occasionDetail2, style } = bundleData;
+  const { occasions } = bundleData;
   console.log(`Generating bundle: ${occasions.length} guides, session=${sessionId} (active=${activeJobs})`);
 
   const results = [];
 
   for (const occ of occasions) {
-    const occasionData = { occasion: occ.slug, occasionName: occ.name, budget, fit, occasionDetail, occasionDetail2, style };
+    // Each occasion carries its own answers from the per-occasion quiz
+    const occasionData = {
+      occasion:        occ.slug,
+      occasionName:    occ.name,
+      budget:          occ.budget          || '',
+      fit:             occ.fit             || '',
+      occasionDetail:  occ.occasionDetail  || '',
+      occasionDetail2: occ.occasionDetail2 || '',
+      style:           occ.style           || '',
+    };
     try {
-      console.log(`Bundle: generating ${occ.name}...`);
-      const products = await fetchOccasionProducts(occ.slug, budget, fit);
+      console.log(`Bundle: generating ${occ.name} (budget=${occ.budget}, fit=${occ.fit})...`);
+      const products = await fetchOccasionProducts(occ.slug, occ.budget, occ.fit);
       const reportContent = await generateOccasionContent(occasionData, products);
       const pdfPath = await buildOccasionPDF(reportContent, occasionData, products);
       const token = crypto.randomBytes(32).toString('hex');
@@ -540,11 +543,14 @@ STYLE PREFERENCE: ${occasionData.style}
 ${rules}
 
 GENERAL RULES FOR ALL OCCASIONS:
+- The recommended products are illustrative examples that match the styling advice — they do not need to form a perfectly coordinated outfit. Each product should be individually appropriate for the occasion and build.
 - Never recommend a product that does not suit the occasion even if it is the only option
 - Better to recommend 2 excellent products than 3 where one is wrong
 - Never recommend joggers, gym wear or sportswear unless the occasion explicitly calls for it
-- Always ask: would a real stylist actually suggest this for this specific person and occasion?
-- COLOUR COORDINATION — CRITICAL: Check that shoe colour works with the bottom half. Blue trainers with blue or dark jeans is a clash — avoid same-family colour combinations between shoes and trousers. For dark outfits (black, navy, dark grey), shoes should be white, black, or a neutral that grounds the look. Never pick a coloured trainer that echoes the trouser colour.
+- Products must suit the build — no slim or muscle fit for bigger/broader builds, no oversized or regular fit for slim builds unless the style calls for it
+- Products must be appropriate for the occasion — a clubwear shirt for a job interview is wrong regardless of fit
+- Shoes must be appropriate for the occasion — leather shoes for formal occasions, trainers for casual, sandals only for holiday/festival
+- Always ask: would a real stylist recommend this specific product for this specific occasion and build?
 
 LAYERING RULE — CRITICAL:
 - Every occasion except very casual ones needs a jacket or layer in the outfit formula
@@ -756,7 +762,7 @@ async function buildOccasionPDF(content, occasionData, products) {
   doc.fontSize(24).fillColor(WHITE).font('Helvetica-Bold').text('HAND-PICKED', PAD, 52);
   doc.fontSize(24).fillColor(GREEN).font('Helvetica-Bold').text('FOR THIS OCCASION', PAD, 80);
   doc.fontSize(9).fillColor(GREY).font('Helvetica-Oblique')
-    .text(`Chosen for your build, your budget and ${(occasionData.occasionName || '').toLowerCase()} — click any name to buy`, PAD, 118, { width: IW });
+    .text(`Products matched to your build, your budget and ${(occasionData.occasionName || '').toLowerCase()} — click any name to buy`, PAD, 118, { width: IW });
 
   const allProductItems = Object.values(products).flat();
 
