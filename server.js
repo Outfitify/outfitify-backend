@@ -258,7 +258,7 @@ app.post('/api/create-bundle-checkout', async (req, res) => {
   const occasionNames = occasions.map(o => o.name || o.slug).join(', ');
 
   const sessionId = crypto.randomBytes(16).toString('hex');
-  saveFreeSession(`bundle_${sessionId}`, { occasions, bundleSize: size, budget, fit, occasionDetail, occasionDetail2, style, email, createdAt: Date.now() });
+  saveFreeSession(`bundle_${sessionId}`, { occasions, bundleSize: size, email, createdAt: Date.now() });
 
   console.log(`Bundle checkout: ${size} guides (${occasionNames}), session ${sessionId}`);
 
