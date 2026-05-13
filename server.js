@@ -281,7 +281,7 @@ app.post('/api/create-bundle-checkout', async (req, res) => {
         quantity: 1,
       }],
       mode: 'payment',
-      success_url: `${process.env.SUCCESS_URL || 'https://success.outfitify.co.uk'}?token={CHECKOUT_SESSION_ID}&sid=${sessionId}&bundle=true`,
+      success_url: `${process.env.SUCCESS_URL || 'https://success.outfitify.co.uk'}?token={CHECKOUT_SESSION_ID}&sid=${sessionId}&bundle=true&bundleSize=${size}`,
       cancel_url: 'https://occasions.outfitify.co.uk',
       metadata: {
         // Only pass sessionId — full occasions data stored in filesystem
