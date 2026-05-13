@@ -258,6 +258,7 @@ app.post('/api/create-bundle-checkout', async (req, res) => {
   const occasionNames = occasions.map(o => o.name || o.slug).join(', ');
 
   const sessionId = crypto.randomBytes(16).toString('hex');
+  // Store full occasions data in filesystem — Stripe metadata has 500 char limit
   saveFreeSession(`bundle_${sessionId}`, { occasions, bundleSize: size, email, createdAt: Date.now() });
 
   console.log(`Bundle checkout: ${size} guides (${occasionNames}), session ${sessionId}`);
@@ -283,9 +284,8 @@ app.post('/api/create-bundle-checkout', async (req, res) => {
       success_url: `${process.env.SUCCESS_URL || 'https://success.outfitify.co.uk'}?token={CHECKOUT_SESSION_ID}&sid=${sessionId}&bundle=true`,
       cancel_url: 'https://occasions.outfitify.co.uk',
       metadata: {
-        sessionId, tier: 'bundle', bundleSize: String(size),
-        occasions: JSON.stringify(occasions), // full per-occasion answers included
-        email,
+        // Only pass sessionId — full occasions data stored in filesystem
+        sessionId, tier: 'bundle', bundleSize: String(size), email,
       },
     });
     res.json({ url: checkoutSession.url });
@@ -317,9 +317,10 @@ app.post('/webhook', async (req, res) => {
     if (!userEmail) console.error(`No email for session ${sessionId}`);
 
     if (tier === 'bundle') {
-      let occasions = [];
-      try { occasions = JSON.parse(session.metadata.occasions || '[]'); } catch { /* skip */ }
-      // occasions array contains full per-occasion answers
+      // Load full occasions data from filesystem (too large for Stripe metadata)
+      const bundleSession = getFreeSession(`bundle_${sessionId}`);
+      const occasions = bundleSession?.occasions || [];
+      if (!occasions.length) console.error(`Bundle: no occasions data found for session ${sessionId}`);
       generateBundleReports(sessionId, { occasions }, userEmail)
         .catch(err => console.error(`Bundle error ${sessionId}:`, err));
 
