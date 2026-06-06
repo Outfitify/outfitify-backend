@@ -86,14 +86,18 @@ function getFreeSession(sessionId) {
 // Occasion field supports comma-separated values e.g. "Date Night, Night Out"
 // A product tagged "Date Night, Night Out" appears in the pool for BOTH occasions
 
-async function fetchOccasionProducts(occasion, budget, fit) {
+async function fetchOccasionProducts(occasion, budget, fit, gender = 'mens') {
   const auth = new google.auth.GoogleAuth({
     credentials: JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON),
     scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
   });
   const sheets = google.sheets({ version: 'v4', auth });
+  // Use women's sheet for women's guides, men's sheet for everything else
+  const sheetId = gender === 'womens'
+    ? (process.env.WOMEN_SHEET_ID || process.env.GOOGLE_SHEET_ID)
+    : process.env.GOOGLE_SHEET_ID;
   const response = await sheets.spreadsheets.values.get({
-    spreadsheetId: process.env.GOOGLE_SHEET_ID,
+    spreadsheetId: sheetId,
     range: 'Sheet1!A:J',
   });
 
@@ -120,13 +124,22 @@ async function fetchOccasionProducts(occasion, budget, fit) {
     return 'Mid';
   }
 
-  // Map fit answer → tier
+  // Map fit/body shape answer → tier
+  // Men's: slim/lean/athletic → Slim, bigger/broader → Regular
+  // Women's: petite/tall/curvy/standard → maps to Fit column values
   function fitToTier(f) {
-    if (!f) return 'Regular';
+    if (!f) return 'Standard';
     const fl = f.toLowerCase();
-    if (fl.includes('slim') || fl.includes('lean') || fl.includes('athletic') || fl.includes('muscular')) return 'Slim';
+    // Women's body shape options
+    if (fl.includes('petite')) return 'Petite';
+    if (fl.includes('tall')) return 'Tall';
+    if (fl.includes('curvy')) return 'Curvy';
+    if (fl.includes('standard')) return 'Standard';
+    // Men's build options
+    if (fl.includes('slim') || fl.includes('lean')) return 'Slim';
+    if (fl.includes('athletic') || fl.includes('muscular')) return 'Athletic';
     if (fl.includes('bigger') || fl.includes('broader')) return 'Regular';
-    return 'Regular';
+    return 'Standard';
   }
 
   const budgetTier = budgetToTier(budget);
@@ -135,14 +148,23 @@ async function fetchOccasionProducts(occasion, budget, fit) {
 
   // Map quiz slugs to database Occasion column values
   const slugToDbOccasion = {
-    'date-night':        'date night',
-    'job-interview':     'job interview',
-    'festival':          'festival',
-    'summer-holiday':    'summer holiday',
-    'wedding-guest':     'wedding',
-    'night-out':         'night out',
-    'smart-casual-work': 'smart casual work',
-    'holiday-travel':    'summer holiday',
+    // Men's slugs
+    'date-night':           'date night',
+    'job-interview':        'job interview',
+    'festival':             'festival',
+    'summer-holiday':       'summer holiday',
+    'wedding-guest':        'wedding',
+    'night-out':            'night out',
+    'smart-casual-work':    'smart casual work',
+    'holiday-travel':       'summer holiday',
+    // Women's slugs
+    'w-date-night':         'date night',
+    'w-job-interview':      'job interview',
+    'w-wedding-guest':      'wedding guest',
+    'w-girls-night-out':    'girls night out',
+    'w-brunch':             'brunch',
+    'w-summer-holiday':     'summer holiday',
+    'w-festival':           'festival',
   };
 
   // Occasion: check each comma-separated value against target
@@ -176,7 +198,10 @@ async function fetchOccasionProducts(occasion, budget, fit) {
     return pool; // any
   }
 
-  const CATEGORIES = ['Top', 'Bottoms', 'Shoes', 'Jacket', 'Hoodie/Jacket', 'Accessory'];
+  // Women's database has Dress as a category, men's doesn't
+  const CATEGORIES = gender === 'womens'
+    ? ['Top', 'Bottoms', 'Dress', 'Jacket', 'Shoes', 'Accessory']
+    : ['Top', 'Bottoms', 'Shoes', 'Jacket', 'Hoodie/Jacket', 'Accessory'];
   const selected = {};
 
   const occasionFitPool  = allProducts.filter(p => matchesOccasion(p, occasion) && matchesFit(p, fitTier));
@@ -375,7 +400,7 @@ async function generateOccasionReport(sessionId, occasionData, userEmail) {
   activeJobs++;
   console.log(`Generating occasion report: ${occasionData.occasion} session=${sessionId} (active=${activeJobs})`);
   try {
-    const products = await fetchOccasionProducts(occasionData.occasion, occasionData.budget, occasionData.fit);
+    const products = await fetchOccasionProducts(occasionData.occasion, occasionData.budget, occasionData.fit, occasionData.gender || 'mens');
     const reportContent = await generateOccasionContent(occasionData, products);
     const pdfPath = await buildOccasionPDF(reportContent, occasionData, products);
     const token = crypto.randomBytes(32).toString('hex');
@@ -413,7 +438,7 @@ async function generateBundleReports(sessionId, bundleData, userEmail) {
     };
     try {
       console.log(`Bundle: generating ${occ.name} (budget=${occ.budget}, fit=${occ.fit})...`);
-      const products = await fetchOccasionProducts(occ.slug, occ.budget, occ.fit);
+      const products = await fetchOccasionProducts(occ.slug, occ.budget, occ.fit, occ.gender || 'mens');
       const reportContent = await generateOccasionContent(occasionData, products);
       const pdfPath = await buildOccasionPDF(reportContent, occasionData, products);
       const token = crypto.randomBytes(32).toString('hex');
@@ -528,18 +553,113 @@ HOLIDAY / TRAVEL RULES:
 - Lightweight and practical but still looks good
 - occasionDetail is destination — beach vs city break vs long-haul all need different approaches
 - occasionDetail2 is trip length — longer trips need more versatile pieces`,
+
+    // ── WOMEN'S OCCASION RULES ────────────────────────────────────────────────
+    'w-date-night': `
+WOMEN'S DATE NIGHT RULES:
+- This is a women's styling guide — all advice must be relevant to women's fashion
+- NO sportswear, gym wear, hoodies, joggers or overly casual pieces
+- occasionDetail is the type of date — restaurant = dressier, drinks = more relaxed, first date = put-together but not overdressed
+- occasionDetail2 is whether they have met this person before — first time = slightly more considered; been together a while = relaxed confidence
+- Body shape guidance:
+  - Petite: midi length dresses and skirts create leg length. Monochrome outfits elongate. Avoid oversized or heavy layers that swamp the frame
+  - Tall: can wear any length. Maxi dresses and wide leg trousers work well. Bold prints work on a taller frame
+  - Curvy: wrap dresses and A-line skirts define the waist. Empire waists work well. Avoid boxy or shapeless fits
+  - Standard: most styles work — focus on what suits the occasion rather than body-specific rules
+- Dresses, midi skirts, smart trousers, fitted tops, heels, block heels, clean trainers for casual dates`,
+
+    'w-job-interview': `
+WOMEN'S JOB INTERVIEW RULES:
+- This is a women's styling guide — all advice must be relevant to women's fashion
+- NO casual t-shirts, hoodies, joggers or sportswear under any circumstances
+- NO overly revealing, tight or short pieces — professional always
+- occasionDetail is the industry — corporate = sharp and formal, creative = smart but with personality, startup = smart casual
+- occasionDetail2 is seniority — entry level can be smart casual, senior should be noticeably sharper
+- Body shape guidance:
+  - Petite: tailored pieces in one tone create a longer line. Avoid wide leg trousers that overwhelm
+  - Tall: can carry wide leg trousers and longer blazers beautifully
+  - Curvy: wrap tops and fit-and-flare silhouettes. Structured blazers define shape
+  - Standard: tailored trouser suit, shirt dress or smart midi skirt with a blouse
+- Tailored trousers, blazers, shirt dresses, midi skirts, blouses, heels or smart flats only`,
+
+    'w-wedding-guest': `
+WOMEN'S WEDDING GUEST RULES:
+- This is a women's styling guide — all advice must be relevant to women's fashion
+- NO white, cream or ivory — never wear white to a wedding as a guest
+- NO overly casual — this is a wedding, dress up
+- occasionDetail is dress code — black tie = floor length gown or formal midi. Smart = cocktail dress or smart midi. Smart casual = midi dress or tailored separates. Garden party = floral midi or smart jumpsuit
+- occasionDetail2 is suit ownership — not relevant for women, use to understand formality level instead
+- Body shape guidance:
+  - Petite: midi length in one colour. Block heels to add height without discomfort for a long day
+  - Tall: maxi dresses and wide leg trouser suits. Floor length gowns for black tie
+  - Curvy: wrap or A-line midi dresses. Empire waist. Avoid bodycon for formal weddings
+  - Standard: cocktail dress, midi dress, smart jumpsuit — all work
+- Midi dresses, maxi dresses, jumpsuits, tailored separates — no jeans, no trainers, no white`,
+
+    'w-girls-night-out': `
+WOMEN'S GIRLS NIGHT OUT RULES:
+- This is a women's styling guide — all advice must be relevant to women's fashion
+- occasionDetail is venue type — bars: smart casual, club: more dressed up and bold, restaurant then bars: start smarter, house party: fun but considered
+- occasionDetail2 is time — early start means practical and comfortable that holds up all night; late start means go all out from the off
+- Body shape guidance:
+  - Petite: mini dresses and skirts show off legs. High waisted bottoms with a crop top
+  - Tall: midi slip dresses, wide leg trousers, co-ord sets
+  - Curvy: bodycon works for clubs but choose quality fabric. Wrap dresses. High waisted skirts with a fitted top
+  - Standard: satin slip, mini dress, co-ord set, going out top with trousers
+- Going out tops, mini dresses, satin slip dresses, co-ord sets, heels, strappy sandals, clean trainers for casual venues`,
+
+    'w-brunch': `
+WOMEN'S BRUNCH / CASUAL DAYTIME RULES:
+- This is a women's styling guide — all advice must be relevant to women's fashion
+- Relaxed and stylish — not pyjamas, not a full formal outfit
+- occasionDetail is the setting — local café: very relaxed, smart restaurant: slightly more considered, outdoor market or event: practical and stylish
+- occasionDetail2 is the season — Summer: lighter fabrics and colours, Autumn/Winter: layers and warmer tones
+- Body shape guidance:
+  - Petite: high waisted jeans with a fitted top or a short dress. Avoid wide leg trousers unless high waisted
+  - Tall: wide leg jeans, maxi skirts, oversized blazers all work beautifully
+  - Curvy: high waisted straight leg jeans, wrap tops, belted midi skirts
+  - Standard: jeans and a nice top, a casual midi dress, linen trousers with a blouse
+- Jeans, casual midi dresses, linen trousers, blouses, casual trainers, loafers, sandals — easy and considered`,
+
+    'w-summer-holiday': `
+WOMEN'S SUMMER HOLIDAY RULES:
+- This is a women's styling guide — all advice must be relevant to women's fashion
+- NO heavy fabrics, thick denim, formal pieces or inappropriate footwear
+- occasionDetail is destination — beach/resort: swimwear cover-ups, breezy dresses, sandals. City break: smarter casuals, linen, clean trainers. Long-haul: comfort plus versatile pieces
+- occasionDetail2 is trip length — longer trips need versatile pieces that mix and match across multiple outfits
+- Body shape guidance:
+  - Petite: wrap dresses and mini kaftans. Wedge sandals for poolside height
+  - Tall: maxi dresses and wide leg linen trousers work perfectly
+  - Curvy: one piece swimwear with wrap sarongs. Wrap dresses. Avoid anything too clingy in the heat
+  - Standard: linen co-ords, midi dresses, shorts and breezy tops
+- Linen dresses, midi sundresses, shorts, breezy tops, sandals, espadrilles, canvas shoes, swimwear cover-ups`,
+
+    'w-festival': `
+WOMEN'S FESTIVAL RULES:
+- This is a women's styling guide — all advice must be relevant to women's fashion
+- NO formal pieces, heavy fabrics or anything precious
+- occasionDetail is festival type — grassroots/indie: practical is key, wellies, layers. Major festival: balance of style and practical. Day festival: more style-led. Urban: closer to a night out
+- occasionDetail2 is duration — multi-day: pack versatile pieces that work multiple ways. One day: go all out on the look
+- Body shape guidance:
+  - Petite: denim shorts with a crop top. Mini skirt with a tee. Festival boots add height practically
+  - Tall: flared jeans, maxi skirts, co-ord sets work beautifully at festivals
+  - Curvy: high waisted denim shorts with a fitted top. Wrap skirts. Practical but flattering
+  - Standard: denim shorts, crop top, midi skirt with a band tee — all classic festival looks
+- Denim shorts, mini skirts, crop tops, band tees, festival boots, wellies, trainers, co-ord sets, lightweight layers`,
   };
 
   const rules = occasionRules[occasionData.occasion] || '';
 
-  const prompt = `You are a real personal stylist writing directly to a man who needs help dressing for a specific occasion. Write like a knowledgeable friend giving direct, honest, specific advice — not like a report being generated.
+  const isWomens = (occasionData.gender === 'womens');
+  const prompt = `You are a real personal stylist writing directly to a ${isWomens ? 'woman' : 'man'} who needs help dressing for a specific occasion. Write like a knowledgeable friend giving direct, honest, specific advice — not like a report being generated.
 
 OCCASION: ${occasionData.occasionName}
 OCCASION DETAIL (Q3): ${occasionData.occasionDetail || 'Not specified'}
 OCCASION DETAIL 2 (Q4): ${occasionData.occasionDetail2 || 'Not specified'}
 BUDGET PER ITEM: ${occasionData.budget}
-BUILD: ${occasionData.fit}
+${isWomens ? 'BODY SHAPE' : 'BUILD'}: ${occasionData.fit}
 STYLE PREFERENCE: ${occasionData.style}
+GENDER: ${isWomens ? 'Women\'s guide — all product picks and styling advice must be for women' : 'Men\'s guide — all product picks and styling advice must be for men'}
 
 ${rules}
 
