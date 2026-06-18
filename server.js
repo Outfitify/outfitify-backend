@@ -180,7 +180,7 @@ async function fetchOccasionProducts(occasion, budget, fit, gender = 'mens') {
   // Fit: "All" matches any build
   function matchesFit(product, target) {
     const pf = (product['Fit'] || '').trim().toLowerCase();
-    return pf === 'all' || pf === target.toLowerCase();
+    return pf === 'all' || pf === 'standard' || pf === target.toLowerCase();
   }
 
   // Budget cascade: exact → adjacent → any
