@@ -98,7 +98,7 @@ async function fetchOccasionProducts(occasion, budget, fit, gender = 'mens') {
     : process.env.GOOGLE_SHEET_ID;
   const response = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: 'Sheet1!A:J',
+    range: gender === 'womens' ? 'Womens!A:J' : 'Mens!A:J',
   });
 
   const rows = response.data.values;
