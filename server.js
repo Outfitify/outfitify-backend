@@ -772,7 +772,7 @@ Rules:
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       const message = await anthropic.messages.create({
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-5',
         max_tokens: 3000,
         messages: [{ role: 'user', content: prompt }],
       });
@@ -1516,7 +1516,7 @@ Rules:
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       const message = await anthropic.messages.create({
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-5',
         max_tokens: 6000,
         messages: [{ role: 'user', content: prompt }],
       });
