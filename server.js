@@ -16,6 +16,11 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 let activeJobs = 0;
 
+// Derives gender from occasion slug — women's slugs all start with 'w-'
+function genderFromOccasion(occasion) {
+  return (occasion || '').startsWith('w-') ? 'womens' : 'mens';
+}
+
 process.on('SIGTERM', () => {
   console.log(`SIGTERM received. Active jobs: ${activeJobs}. Waiting before exit...`);
   const wait = () => {
@@ -32,6 +37,7 @@ app.use(cors({
     'https://success.outfitify.co.uk',
     'https://quiz.outfitify.co.uk',
     'https://occasions.outfitify.co.uk',
+    'https://women.outfitify.co.uk',
     'https://chipper-fairy-2f755d.netlify.app',
     /\.netlify\.app$/,
     'http://localhost:3000',
@@ -350,14 +356,18 @@ app.post('/webhook', async (req, res) => {
         .catch(err => console.error(`Bundle error ${sessionId}:`, err));
 
     } else if (tier === 'occasion') {
+      const occasion = session.metadata.occasion;
+      // FIX: derive gender from occasion slug — never rely on metadata alone
+      const gender = session.metadata.gender || genderFromOccasion(occasion);
       generateOccasionReport(sessionId, {
-        occasion:        session.metadata.occasion,
+        occasion,
         occasionName:    session.metadata.occasionName,
         budget:          session.metadata.budget,
         fit:             session.metadata.fit,
         occasionDetail:  session.metadata.occasionDetail,
         occasionDetail2: session.metadata.occasionDetail2,
         style:           session.metadata.style,
+        gender,
       }, userEmail).catch(err => console.error(`Occasion error ${sessionId}:`, err));
 
     } else {
@@ -400,7 +410,9 @@ async function generateOccasionReport(sessionId, occasionData, userEmail) {
   activeJobs++;
   console.log(`Generating occasion report: ${occasionData.occasion} session=${sessionId} (active=${activeJobs})`);
   try {
-    const products = await fetchOccasionProducts(occasionData.occasion, occasionData.budget, occasionData.fit, occasionData.gender || 'mens');
+    // FIX: always resolve gender from occasion slug as source of truth
+  const gender = occasionData.gender || genderFromOccasion(occasionData.occasion);
+  const products = await fetchOccasionProducts(occasionData.occasion, occasionData.budget, occasionData.fit, gender);
     const reportContent = await generateOccasionContent(occasionData, products);
     const pdfPath = await buildOccasionPDF(reportContent, occasionData, products);
     const token = crypto.randomBytes(32).toString('hex');
@@ -438,7 +450,9 @@ async function generateBundleReports(sessionId, bundleData, userEmail) {
     };
     try {
       console.log(`Bundle: generating ${occ.name} (budget=${occ.budget}, fit=${occ.fit})...`);
-      const products = await fetchOccasionProducts(occ.slug, occ.budget, occ.fit, occ.gender || 'mens');
+      // FIX: derive gender from slug so women's occasions hit Womens tab
+      const gender = occ.gender || genderFromOccasion(occ.slug);
+      const products = await fetchOccasionProducts(occ.slug, occ.budget, occ.fit, gender);
       const reportContent = await generateOccasionContent(occasionData, products);
       const pdfPath = await buildOccasionPDF(reportContent, occasionData, products);
       const token = crypto.randomBytes(32).toString('hex');
