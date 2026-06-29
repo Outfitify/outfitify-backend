@@ -874,15 +874,6 @@ async function buildOccasionPDF(content, occasionData, products) {
     curY += avoidH + 16;
   }
 
-  if (curY + 60 < PH - 80 && content.stylistTip) {
-    sectionLabel("STYLIST'S INSIDER TIP", curY);
-    curY += 20;
-    const tipH = Math.max(textH(content.stylistTip, 9.5, 'Helvetica', IW - 28) + 28, 52);
-    doc.rect(PAD, curY, IW, tipH).fill(CARD2);
-    doc.rect(PAD, curY, IW, tipH).strokeColor(GREEN).lineWidth(0.5).stroke();
-    doc.fontSize(9.5).fillColor(MUTED).font('Helvetica').text(content.stylistTip, PAD + 14, curY + 14, { width: IW - 28, lineGap: 3 });
-  }
-
   footer();
 
   // ── PAGE 2 — PRODUCT PICKS + WHERE TO SHOP ─────────────────────────────────
@@ -901,10 +892,18 @@ async function buildOccasionPDF(content, occasionData, products) {
 
   const allProductItems = Object.values(products).flat();
 
-  // No image fetching — text-only card layout
+  // ── STYLIST TIP — guaranteed slot at top of page 2, below header ──
+  let pieceY = 148;
+  if (content.stylistTip) {
+    const tipH = Math.max(textH(content.stylistTip, 9, 'Helvetica', IW - 28) + 28, 44);
+    doc.rect(PAD, pieceY, IW, tipH).fill(CARD2);
+    doc.rect(PAD, pieceY, IW, tipH).strokeColor(GREEN).lineWidth(0.5).stroke();
+    doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold').text("STYLIST'S TIP", PAD + 14, pieceY + 9, { characterSpacing: 2 });
+    doc.fontSize(9).fillColor(MUTED).font('Helvetica').text(content.stylistTip, PAD + 14, pieceY + 21, { width: IW - 28, lineGap: 2 });
+    pieceY += tipH + 10;
+  }
 
   const priceColW = 80;
-  let pieceY = 148;
 
   for (let i = 0; i < pieces.length; i++) {
     const piece = pieces[i];
