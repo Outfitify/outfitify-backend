@@ -1109,27 +1109,77 @@ async function sendOccasionEmail(toEmail, downloadUrl, occasionName, sessionId) 
     from: { address: 'outfitify@outfitify.co.uk', name: 'Outfitify' },
     to: [{ email_address: { address: toEmail } }],
     subject: `Your ${occasionName} Style Guide is Ready`,
-    htmlbody: `
-      <div style="background:#0A0A0A;padding:0;font-family:Arial,sans-serif;max-width:600px;margin:0 auto;border:1px solid #2A2520">
-        <div style="background:#111111;padding:28px 40px;border-bottom:1px solid #2A2520;text-align:center">
-          <p style="color:#7A6E66;font-size:10px;letter-spacing:4px;margin:0 0 4px;text-transform:uppercase">Occasion Style Guide</p>
-          <h1 style="color:#F2EDE6;font-size:14px;letter-spacing:5px;margin:0;font-weight:600">OUTFITIFY</h1>
-        </div>
-        <div style="padding:44px 40px">
-          <h2 style="color:#F2EDE6;font-size:26px;font-weight:300;margin:0 0 12px;line-height:1.2">Your ${occasionName} guide is ready.</h2>
-          <p style="color:#7A6E66;font-size:14px;line-height:1.7;margin:0 0 32px">Your personalised outfit guide has been built around your answers — what to wear, how it should fit your build, what to avoid, 3 hand-picked products with links and prices, and where to shop if you want to find your own.</p>
-          <a href="${downloadUrl}" style="display:block;background:#F2EDE6;color:#0A0A0A;text-align:center;padding:16px;font-size:11px;font-weight:600;letter-spacing:3px;text-decoration:none;margin:0 0 32px;text-transform:uppercase">DOWNLOAD MY STYLE GUIDE →</a>
-          <div style="background:#111111;border:1px solid #2A2520;border-left:3px solid #B8A898;padding:24px;margin:0 0 24px">
-            <p style="color:#B8A898;font-size:10px;letter-spacing:3px;font-weight:600;margin:0 0 10px;text-transform:uppercase">Got another occasion coming up?</p>
-            <p style="color:#C8BFB5;font-size:13px;line-height:1.7;margin:0 0 16px">Date night, wedding, job interview, festival — each one has its own dedicated guide. £2.49 each, or bundle 2 for £3.99 or 3 for £4.99.</p>
-            <a href="https://occasions.outfitify.co.uk" style="display:block;background:#B8A898;color:#0A0A0A;text-align:center;padding:14px;font-size:11px;font-weight:600;letter-spacing:3px;text-decoration:none;text-transform:uppercase">BROWSE ALL OCCASIONS →</a>
-          </div>
-          <p style="color:#4A4440;font-size:12px;text-align:center;border-top:1px solid #2A2520;padding-top:20px;margin:0">This link is unique to you. If you have any issues, reply to this email.</p>
-        </div>
-        <div style="background:#111111;border-top:1px solid #2A2520;padding:16px 40px;text-align:center">
-          <p style="color:#4A4440;font-size:10px;letter-spacing:2px;margin:0">OUTFITIFY · MAKING STYLE EFFORTLESS · OUTFITIFY.CO.UK</p>
-        </div>
-      </div>`,
+    htmlbody: `<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta charset="UTF-8">
+<meta name="color-scheme" content="dark">
+<meta name="supported-color-schemes" content="dark">
+<style>
+  :root { color-scheme: dark; supported-color-schemes: dark; }
+  body { margin:0!important; padding:0!important; background-color:#0A0A0A!important; }
+  * { -webkit-text-size-adjust:none; }
+  @media (prefers-color-scheme: dark) {
+    body { background-color:#0A0A0A!important; }
+    .email-wrap { background-color:#0A0A0A!important; }
+  }
+</style>
+</head>
+<body style="margin:0;padding:0;background-color:#0A0A0A;">
+<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#0A0A0A;">
+<tr><td align="center" style="background-color:#0A0A0A;padding:0;">
+<table class="email-wrap" width="600" cellpadding="0" cellspacing="0" border="0" style="max-width:600px;width:100%;background-color:#0A0A0A;border:1px solid #2A2520;font-family:Arial,sans-serif;">
+
+  <!-- HEADER -->
+  <tr>
+    <td style="background-color:#111111;padding:28px 40px;border-bottom:1px solid #2A2520;text-align:center;">
+      <p style="color:#7A6E66;font-size:10px;letter-spacing:4px;margin:0 0 4px 0;text-transform:uppercase;font-family:Arial,sans-serif;">Occasion Style Guide</p>
+      <h1 style="color:#F2EDE6;font-size:14px;letter-spacing:5px;margin:0;font-weight:600;font-family:Arial,sans-serif;">OUTFITIFY</h1>
+    </td>
+  </tr>
+
+  <!-- BODY -->
+  <tr>
+    <td style="background-color:#0A0A0A;padding:44px 40px;">
+      <h2 style="color:#F2EDE6;font-size:26px;font-weight:300;margin:0 0 12px 0;line-height:1.2;font-family:Arial,sans-serif;">Your ${occasionName} guide is ready.</h2>
+      <p style="color:#7A6E66;font-size:14px;line-height:1.7;margin:0 0 32px 0;font-family:Arial,sans-serif;">Your personalised outfit guide has been built around your answers — what to wear, how it should fit your build, what to avoid, hand-picked products with links and prices, and where to shop if you want to find your own.</p>
+      
+      <!-- CTA BUTTON -->
+      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 32px 0;">
+        <tr>
+          <td style="background-color:#F2EDE6;text-align:center;padding:0;">
+            <a href="${downloadUrl}" style="display:block;background-color:#F2EDE6;color:#0A0A0A;text-align:center;padding:18px 16px;font-size:11px;font-weight:600;letter-spacing:3px;text-decoration:none;text-transform:uppercase;font-family:Arial,sans-serif;">DOWNLOAD MY STYLE GUIDE →</a>
+          </td>
+        </tr>
+      </table>
+
+      <!-- UPSELL CARD -->
+      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 24px 0;border:1px solid #2A2520;border-left:3px solid #B8A898;">
+        <tr>
+          <td style="background-color:#111111;padding:24px;">
+            <p style="color:#B8A898;font-size:10px;letter-spacing:3px;font-weight:600;margin:0 0 10px 0;text-transform:uppercase;font-family:Arial,sans-serif;">Got another occasion coming up?</p>
+            <p style="color:#C8BFB5;font-size:13px;line-height:1.7;margin:0 0 16px 0;font-family:Arial,sans-serif;">Date night, wedding, job interview, festival — each one has its own dedicated guide. £2.49 each, or bundle 2 for £3.99 or 3 for £4.99.</p>
+            <a href="https://occasions.outfitify.co.uk" style="display:block;background-color:#B8A898;color:#0A0A0A;text-align:center;padding:14px;font-size:11px;font-weight:600;letter-spacing:3px;text-decoration:none;text-transform:uppercase;font-family:Arial,sans-serif;">BROWSE ALL OCCASIONS →</a>
+          </td>
+        </tr>
+      </table>
+
+      <p style="color:#4A4440;font-size:12px;text-align:center;border-top:1px solid #2A2520;padding-top:20px;margin:0;font-family:Arial,sans-serif;">This link is unique to you. If you have any issues, reply to this email.</p>
+    </td>
+  </tr>
+
+  <!-- FOOTER -->
+  <tr>
+    <td style="background-color:#111111;border-top:1px solid #2A2520;padding:16px 40px;text-align:center;">
+      <p style="color:#4A4440;font-size:10px;letter-spacing:2px;margin:0;font-family:Arial,sans-serif;">OUTFITIFY · MAKING STYLE EFFORTLESS · OUTFITIFY.CO.UK</p>
+    </td>
+  </tr>
+
+</table>
+</td></tr>
+</table>
+</body>
+</html>`,
   };
   const response = await axios.post('https://api.zeptomail.eu/v1.1/email', emailBody, {
     headers: { Accept: 'application/json', 'Content-Type': 'application/json', Authorization: process.env.ZEPTO_SMTP_PASS },
@@ -1150,27 +1200,69 @@ async function sendBundleEmail(toEmail, guides, sessionId) {
     from: { address: 'outfitify@outfitify.co.uk', name: 'Outfitify' },
     to: [{ email_address: { address: toEmail } }],
     subject: `Your ${guides.length} Occasion Style Guides Are Ready`,
-    htmlbody: `
-      <div style="background:#0A0A0A;padding:0;font-family:Arial,sans-serif;max-width:600px;margin:0 auto;border:1px solid #2A2520">
-        <div style="background:#111111;padding:28px 40px;border-bottom:1px solid #2A2520;text-align:center">
-          <p style="color:#7A6E66;font-size:10px;letter-spacing:4px;margin:0 0 4px;text-transform:uppercase">Occasion Style Guides</p>
-          <h1 style="color:#F2EDE6;font-size:14px;letter-spacing:5px;margin:0;font-weight:600">OUTFITIFY</h1>
-        </div>
-        <div style="padding:44px 40px">
-          <h2 style="color:#F2EDE6;font-size:26px;font-weight:300;margin:0 0 12px;line-height:1.2">Your ${guides.length} guides are ready.</h2>
-          <p style="color:#7A6E66;font-size:14px;line-height:1.7;margin:0 0 32px">All ${guides.length} of your personalised occasion style guides have been built. Download each one below.</p>
-          ${guideButtons}
-          <div style="background:#111111;border:1px solid #2A2520;border-left:3px solid #B8A898;padding:24px;margin:24px 0">
-            <p style="color:#B8A898;font-size:10px;letter-spacing:3px;font-weight:600;margin:0 0 10px;text-transform:uppercase">Need another occasion?</p>
-            <p style="color:#C8BFB5;font-size:13px;line-height:1.7;margin:0 0 16px">Pick up any remaining occasion guides at £2.49 each.</p>
-            <a href="https://occasions.outfitify.co.uk" style="display:block;background:#B8A898;color:#0A0A0A;text-align:center;padding:14px;font-size:11px;font-weight:600;letter-spacing:3px;text-decoration:none;text-transform:uppercase">BROWSE ALL OCCASIONS →</a>
-          </div>
-          <p style="color:#4A4440;font-size:12px;text-align:center;border-top:1px solid #2A2520;padding-top:20px;margin:0">These links are unique to you. If you have any issues, reply to this email.</p>
-        </div>
-        <div style="background:#111111;border-top:1px solid #2A2520;padding:16px 40px;text-align:center">
-          <p style="color:#4A4440;font-size:10px;letter-spacing:2px;margin:0">OUTFITIFY · MAKING STYLE EFFORTLESS · OUTFITIFY.CO.UK</p>
-        </div>
-      </div>`,
+    htmlbody: `<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta charset="UTF-8">
+<meta name="color-scheme" content="dark">
+<meta name="supported-color-schemes" content="dark">
+<style>
+  :root { color-scheme: dark; supported-color-schemes: dark; }
+  body { margin:0!important; padding:0!important; background-color:#0A0A0A!important; }
+  * { -webkit-text-size-adjust:none; }
+  @media (prefers-color-scheme: dark) {
+    body { background-color:#0A0A0A!important; }
+    .email-wrap { background-color:#0A0A0A!important; }
+  }
+</style>
+</head>
+<body style="margin:0;padding:0;background-color:#0A0A0A;">
+<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#0A0A0A;">
+<tr><td align="center" style="background-color:#0A0A0A;padding:0;">
+<table class="email-wrap" width="600" cellpadding="0" cellspacing="0" border="0" style="max-width:600px;width:100%;background-color:#0A0A0A;border:1px solid #2A2520;font-family:Arial,sans-serif;">
+
+  <!-- HEADER -->
+  <tr>
+    <td style="background-color:#111111;padding:28px 40px;border-bottom:1px solid #2A2520;text-align:center;">
+      <p style="color:#7A6E66;font-size:10px;letter-spacing:4px;margin:0 0 4px 0;text-transform:uppercase;font-family:Arial,sans-serif;">Occasion Style Guides</p>
+      <h1 style="color:#F2EDE6;font-size:14px;letter-spacing:5px;margin:0;font-weight:600;font-family:Arial,sans-serif;">OUTFITIFY</h1>
+    </td>
+  </tr>
+
+  <!-- BODY -->
+  <tr>
+    <td style="background-color:#0A0A0A;padding:44px 40px;">
+      <h2 style="color:#F2EDE6;font-size:26px;font-weight:300;margin:0 0 12px 0;line-height:1.2;font-family:Arial,sans-serif;">Your ${guides.length} guides are ready.</h2>
+      <p style="color:#7A6E66;font-size:14px;line-height:1.7;margin:0 0 32px 0;font-family:Arial,sans-serif;">All ${guides.length} of your personalised occasion style guides have been built. Download each one below.</p>
+      ${guideButtons}
+
+      <!-- UPSELL CARD -->
+      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:24px 0;border:1px solid #2A2520;border-left:3px solid #B8A898;">
+        <tr>
+          <td style="background-color:#111111;padding:24px;">
+            <p style="color:#B8A898;font-size:10px;letter-spacing:3px;font-weight:600;margin:0 0 10px 0;text-transform:uppercase;font-family:Arial,sans-serif;">Need another occasion?</p>
+            <p style="color:#C8BFB5;font-size:13px;line-height:1.7;margin:0 0 16px 0;font-family:Arial,sans-serif;">Pick up any remaining occasion guides at £2.49 each.</p>
+            <a href="https://occasions.outfitify.co.uk" style="display:block;background-color:#B8A898;color:#0A0A0A;text-align:center;padding:14px;font-size:11px;font-weight:600;letter-spacing:3px;text-decoration:none;text-transform:uppercase;font-family:Arial,sans-serif;">BROWSE ALL OCCASIONS →</a>
+          </td>
+        </tr>
+      </table>
+
+      <p style="color:#4A4440;font-size:12px;text-align:center;border-top:1px solid #2A2520;padding-top:20px;margin:0;font-family:Arial,sans-serif;">These links are unique to you. If you have any issues, reply to this email.</p>
+    </td>
+  </tr>
+
+  <!-- FOOTER -->
+  <tr>
+    <td style="background-color:#111111;border-top:1px solid #2A2520;padding:16px 40px;text-align:center;">
+      <p style="color:#4A4440;font-size:10px;letter-spacing:2px;margin:0;font-family:Arial,sans-serif;">OUTFITIFY · MAKING STYLE EFFORTLESS · OUTFITIFY.CO.UK</p>
+    </td>
+  </tr>
+
+</table>
+</td></tr>
+</table>
+</body>
+</html>`,
   };
   const response = await axios.post('https://api.zeptomail.eu/v1.1/email', emailBody, {
     headers: { Accept: 'application/json', 'Content-Type': 'application/json', Authorization: process.env.ZEPTO_SMTP_PASS },
