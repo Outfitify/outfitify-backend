@@ -49,7 +49,16 @@ app.use(express.json());
 
 // ── SESSION / FILE HELPERS ────────────────────────────────────────────────────
 
-const DOWNLOADS_DIR = path.join(os.tmpdir(), 'outfitify-downloads');
+// PERSIST_DIR: on Railway, attach a Volume and set RAILWAY_VOLUME_MOUNT_PATH
+// (or STORAGE_DIR) to its mount path, e.g. /data. Without a persistent
+// volume this falls back to os.tmpdir(), which Railway wipes on every
+// restart/redeploy — that fallback is NOT safe for production downloads.
+const PERSIST_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH || process.env.STORAGE_DIR || os.tmpdir();
+if (PERSIST_DIR === os.tmpdir()) {
+  console.warn('[WARNING] No persistent volume configured — PDFs and download links will be lost on every restart/redeploy. Set RAILWAY_VOLUME_MOUNT_PATH.');
+}
+
+const DOWNLOADS_DIR = path.join(PERSIST_DIR, 'outfitify-downloads');
 if (!fs.existsSync(DOWNLOADS_DIR)) fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
 
 function downloadsPath(sessionId) { return path.join(DOWNLOADS_DIR, `${sessionId}.json`); }
@@ -71,7 +80,7 @@ function findDownloadByToken(token) {
   return null;
 }
 
-const FREE_SESSIONS_DIR = path.join(os.tmpdir(), 'outfitify-free-sessions');
+const FREE_SESSIONS_DIR = path.join(PERSIST_DIR, 'outfitify-free-sessions');
 if (!fs.existsSync(FREE_SESSIONS_DIR)) fs.mkdirSync(FREE_SESSIONS_DIR, { recursive: true });
 
 function saveFreeSession(sessionId, data) {
@@ -794,7 +803,7 @@ Rules:
 // ── BUILD OCCASION PDF ────────────────────────────────────────────────────────
 
 async function buildOccasionPDF(content, occasionData, products) {
-  const pdfPath = path.join(os.tmpdir(), `outfitify-occasion-${Date.now()}.pdf`);
+  const pdfPath = path.join(DOWNLOADS_DIR, `outfitify-occasion-${Date.now()}.pdf`);
   const doc = new PDFDocument({ size: 'A4', margin: 0, autoFirstPage: true });
   const stream = fs.createWriteStream(pdfPath);
   doc.pipe(stream);
@@ -1628,7 +1637,7 @@ Rules:
 // ── LEGACY: BUILD PDF ─────────────────────────────────────────────────────────
 
 async function buildPDF(content, quizData, products, tier = 'standard') {
-  const pdfPath = path.join(os.tmpdir(), `outfitify-${Date.now()}.pdf`);
+  const pdfPath = path.join(DOWNLOADS_DIR, `outfitify-${Date.now()}.pdf`);
   const doc = new PDFDocument({ size: 'A4', margin: 0, autoFirstPage: true });
   const stream = fs.createWriteStream(pdfPath);
   doc.pipe(stream);
