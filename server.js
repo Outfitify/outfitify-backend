@@ -264,7 +264,7 @@ app.post('/api/create-occasion-checkout', async (req, res) => {
         quantity: 1,
       }],
       mode: 'payment',
-      success_url: `${process.env.SUCCESS_URL || 'https://success.outfitify.co.uk'}?token={CHECKOUT_SESSION_ID}&sid=${sessionId}&occasion=true`,
+      success_url: `${process.env.SUCCESS_URL || 'https://success.outfitify.co.uk'}?token={CHECKOUT_SESSION_ID}&sid=${sessionId}&occasion=true&value=2.49`,
       cancel_url: 'https://occasions.outfitify.co.uk',
       metadata: {
         sessionId, tier: 'occasion', occasion, occasionName,
@@ -321,7 +321,7 @@ app.post('/api/create-bundle-checkout', async (req, res) => {
         quantity: 1,
       }],
       mode: 'payment',
-      success_url: `${process.env.SUCCESS_URL || 'https://success.outfitify.co.uk'}?token={CHECKOUT_SESSION_ID}&sid=${sessionId}&bundle=true&bundleSize=${size}`,
+      success_url: `${process.env.SUCCESS_URL || 'https://success.outfitify.co.uk'}?token={CHECKOUT_SESSION_ID}&sid=${sessionId}&bundle=true&bundleSize=${size}&value=${(unitAmount/100).toFixed(2)}`,
       cancel_url: 'https://occasions.outfitify.co.uk',
       metadata: {
         // Only pass sessionId — full occasions data stored in filesystem
@@ -1320,8 +1320,7 @@ app.post('/api/create-checkout', async (req, res) => {
       payment_method_types: ['card'], customer_creation: 'always', allow_promotion_codes: true,
       line_items: [{ price_data: { currency: 'gbp', product_data: { name: config.name }, unit_amount: config.amount }, quantity: 1 }],
       mode: 'payment',
-      success_url: `${process.env.SUCCESS_URL || 'https://success.outfitify.co.uk'}?token={CHECKOUT_SESSION_ID}&sid=${sessionId}`,
-      cancel_url: `${process.env.UNLOCK_PAGE_URL || 'https://quiz.outfitify.co.uk'}?cancelled=true`,
+      success_url: `${process.env.SUCCESS_URL || 'https://success.outfitify.co.uk'}?token={CHECKOUT_SESSION_ID}&sid=${sessionId}&value=${(config.amount/100).toFixed(2)}`,
       metadata: { sessionId, tier: resolvedTier, budget: quizData.budget || '', struggles: quizData.struggles || '', lifestyle: quizData.lifestyle || '', goal: quizData.goal || '', fit: quizData.fit || '' },
     });
     res.json({ url: checkoutSession.url });
@@ -1341,8 +1340,7 @@ app.get('/api/upgrade-to-premium/:sessionId', async (req, res) => {
       payment_method_types: ['card'], customer_creation: 'always', allow_promotion_codes: true,
       line_items: [{ price_data: { currency: 'gbp', product_data: { name: 'Outfitify Personal Style Blueprint — Premium' }, unit_amount: 999 }, quantity: 1 }],
       mode: 'payment',
-      success_url: `${process.env.SUCCESS_URL || 'https://success.outfitify.co.uk'}?token={CHECKOUT_SESSION_ID}&sid=${sessionId}`,
-      cancel_url: `https://unlock.outfitify.co.uk?sid=${sessionId}&cancelled=true`,
+      success_url: `${process.env.SUCCESS_URL || 'https://success.outfitify.co.uk'}?token={CHECKOUT_SESSION_ID}&sid=${sessionId}&value=9.99`,
       metadata: { sessionId, tier: 'premium', budget: quizData.budget || '', struggles: quizData.struggles || '', lifestyle: quizData.lifestyle || '', goal: quizData.goal || '', fit: quizData.fit || '' },
     });
     res.redirect(checkoutSession.url);
