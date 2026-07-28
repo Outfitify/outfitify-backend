@@ -271,6 +271,22 @@ async function fetchOccasionProducts(occasion, budget, fit, gender = 'mens') {
 
 // ── OCCASION CHECKOUT ─────────────────────────────────────────────────────────
 
+// ── V3 USER STATUS CHECK ───────────────────────────────────────────────────────
+// Lightweight, read-only — lets the frontend show the real pricing state
+// (free available / already used / unlimited) before the customer commits,
+// instead of only finding out at checkout time
+
+app.get('/api/user-status', (req, res) => {
+  const email = req.query.email;
+  if (!email) return res.status(400).json({ error: 'Missing email' });
+  const user = getUserRecord(email);
+  res.json({
+    freeUsed: !!user.freeUsed,
+    unlimitedPaid: !!user.unlimitedPaid,
+    guideCount: user.guideCount || 0,
+  });
+});
+
 app.post('/api/create-occasion-checkout', async (req, res) => {
   const { occasion, occasionName, budget, fit, occasionDetail, occasionDetail2, style, email } = req.body;
   if (!occasion || !email) return res.status(400).json({ error: 'Missing required fields' });
