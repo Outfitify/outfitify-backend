@@ -58,7 +58,10 @@ const DOWNLOADS_DIR = path.join(PERSIST_DIR, 'outfitify-downloads');
 if (!fs.existsSync(DOWNLOADS_DIR)) fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
 
 // Font files for PDF generation — place the 6 .ttf files in a /fonts folder in your repo
-const FONTS_DIR = path.join(__dirname, 'fonts');
+// Font files currently live at the repo root (not in a /fonts subfolder) —
+// pointing directly at __dirname to match where they actually are, rather
+// than requiring a folder move in GitHub
+const FONTS_DIR = __dirname;
 
 function downloadsPath(sessionId) { return path.join(DOWNLOADS_DIR, `${sessionId}.json`); }
 function saveDownload(sessionId, data) { fs.writeFileSync(downloadsPath(sessionId), JSON.stringify(data)); }
@@ -320,14 +323,18 @@ app.post('/api/create-occasion-checkout', async (req, res) => {
 
   // ── PATH 2: First guide ever for this email — free, no payment ──
   if (!user.freeUsed) {
-    saveUserRecord(email, { ...user, freeUsed: true });
-
     const sessionId = crypto.randomBytes(16).toString('hex');
     saveFreeSession(`occ_${sessionId}`, { ...occasionData, createdAt: Date.now() });
     res.json({ free: true, sessionId });
 
     generateOccasionReport(sessionId, occasionData, email, { isFree: true })
-      .then(() => incrementGuideCount(email))
+      .then(() => {
+        // Only mark the free guide as used once it's actually been delivered —
+        // a failed generation (e.g. a server error) should never burn the
+        // customer's free guide with nothing to show for it
+        saveUserRecord(email, { ...getUserRecord(email), freeUsed: true });
+        incrementGuideCount(email);
+      })
       .catch(err => console.error(`Free-tier report failed ${sessionId}:`, err));
     return;
   }
