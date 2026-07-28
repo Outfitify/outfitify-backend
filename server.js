@@ -1276,7 +1276,13 @@ async function buildOccasionPDF(content, occasionData, products) {
     });
   }
 
-  if (completeYourLook.length > 0 && pieceY + 20 < PH - 100) {
+  if (completeYourLook.length > 0) {
+    // Real space needed: 12px (pieceY→cylY) + 21px (cylY→cylCurY) + 72px (min card height)
+    // Must match exactly, or a narrow gap between this check and the actual
+    // draw position can still produce an orphaned header with no card beneath it
+    if (pieceY + 12 + 21 + 72 >= PH - 100) {
+      footer(); doc.addPage(); bg(); pageHeader('Complete Your Look'); pieceY = 50;
+    }
     const cylY = pieceY + 12;
     sectionLabel('COMPLETE YOUR LOOK', cylY);
     let cylCurY = cylY + 21;
