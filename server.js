@@ -49,10 +49,6 @@ app.use(express.json());
 
 // ── SESSION / FILE HELPERS ────────────────────────────────────────────────────
 
-// PERSIST_DIR: on Railway, attach a Volume and set RAILWAY_VOLUME_MOUNT_PATH
-// (or STORAGE_DIR) to its mount path, e.g. /data. Without a persistent
-// volume this falls back to os.tmpdir(), which Railway wipes on every
-// restart/redeploy — that fallback is NOT safe for production downloads.
 const PERSIST_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH || process.env.STORAGE_DIR || os.tmpdir();
 if (PERSIST_DIR === os.tmpdir()) {
   console.warn('[WARNING] No persistent volume configured — PDFs and download links will be lost on every restart/redeploy. Set RAILWAY_VOLUME_MOUNT_PATH.');
@@ -60,6 +56,9 @@ if (PERSIST_DIR === os.tmpdir()) {
 
 const DOWNLOADS_DIR = path.join(PERSIST_DIR, 'outfitify-downloads');
 if (!fs.existsSync(DOWNLOADS_DIR)) fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
+
+// Font files for PDF generation — place the 6 .ttf files in a /fonts folder in your repo
+const FONTS_DIR = path.join(__dirname, 'fonts');
 
 function downloadsPath(sessionId) { return path.join(DOWNLOADS_DIR, `${sessionId}.json`); }
 function saveDownload(sessionId, data) { fs.writeFileSync(downloadsPath(sessionId), JSON.stringify(data)); }
@@ -96,10 +95,41 @@ function getFreeSession(sessionId) {
   } catch { return null; }
 }
 
+// ── V3 USERS — tracks free-guide usage, unlimited status and guide count per email ──
+// One JSON file per email (hashed for a filesystem-safe, case/whitespace-normalised key)
+
+const USERS_DIR = path.join(PERSIST_DIR, 'outfitify-users');
+if (!fs.existsSync(USERS_DIR)) fs.mkdirSync(USERS_DIR, { recursive: true });
+
+const UNLIMITED_GUIDE_CAP = 50; // soft cap, backend safety net only — not customer-facing
+
+function emailKey(email) {
+  return crypto.createHash('sha256').update((email || '').trim().toLowerCase()).digest('hex');
+}
+
+function getUserRecord(email) {
+  const p = path.join(USERS_DIR, `${emailKey(email)}.json`);
+  if (!fs.existsSync(p)) return { email, freeUsed: false, unlimitedPaid: false, guideCount: 0 };
+  try {
+    return JSON.parse(fs.readFileSync(p, 'utf8'));
+  } catch {
+    return { email, freeUsed: false, unlimitedPaid: false, guideCount: 0 };
+  }
+}
+
+function saveUserRecord(email, record) {
+  const p = path.join(USERS_DIR, `${emailKey(email)}.json`);
+  fs.writeFileSync(p, JSON.stringify({ ...record, email, updatedAt: Date.now() }));
+}
+
+function incrementGuideCount(email) {
+  const record = getUserRecord(email);
+  record.guideCount = (record.guideCount || 0) + 1;
+  saveUserRecord(email, record);
+  return record;
+}
+
 // ── FETCH PRODUCTS (v2) ───────────────────────────────────────────────────────
-// Sheet columns (A-J): Category | Item Name | Brand | Price | Product URL | Image URL | Occasion | Budget | Fit | Season
-// Occasion field supports comma-separated values e.g. "Date Night, Night Out"
-// A product tagged "Date Night, Night Out" appears in the pool for BOTH occasions
 
 async function fetchOccasionProducts(occasion, budget, fit, gender = 'mens') {
   const auth = new google.auth.GoogleAuth({
@@ -107,7 +137,6 @@ async function fetchOccasionProducts(occasion, budget, fit, gender = 'mens') {
     scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
   });
   const sheets = google.sheets({ version: 'v4', auth });
-  // Use women's sheet for women's guides, men's sheet for everything else
   const sheetId = gender === 'womens'
     ? (process.env.WOMEN_SHEET_ID || process.env.GOOGLE_SHEET_ID)
     : process.env.GOOGLE_SHEET_ID;
@@ -130,7 +159,6 @@ async function fetchOccasionProducts(occasion, budget, fit, gender = 'mens') {
 
   console.log(`[fetchOccasionProducts] Total: ${allProducts.length} | occasion=${occasion} budget=${budget} fit=${fit}`);
 
-  // Map budget answer → tier
   function budgetToTier(b) {
     if (!b) return 'Budget';
     const bl = b.toLowerCase();
@@ -139,18 +167,13 @@ async function fetchOccasionProducts(occasion, budget, fit, gender = 'mens') {
     return 'Mid';
   }
 
-  // Map fit/body shape answer → tier
-  // Men's: slim/lean/athletic → Slim, bigger/broader → Regular
-  // Women's: petite/tall/curvy/standard → maps to Fit column values
   function fitToTier(f) {
     if (!f) return 'Standard';
     const fl = f.toLowerCase();
-    // Women's body shape options
     if (fl.includes('petite')) return 'Petite';
     if (fl.includes('tall')) return 'Tall';
     if (fl.includes('curvy')) return 'Curvy';
     if (fl.includes('standard')) return 'Standard';
-    // Men's build options
     if (fl.includes('slim') || fl.includes('lean')) return 'Slim';
     if (fl.includes('athletic') || fl.includes('muscular')) return 'Athletic';
     if (fl.includes('bigger') || fl.includes('broader')) return 'Regular';
@@ -161,9 +184,7 @@ async function fetchOccasionProducts(occasion, budget, fit, gender = 'mens') {
   const fitTier = fitToTier(fit);
   console.log(`[fetchOccasionProducts] budgetTier=${budgetTier} fitTier=${fitTier}`);
 
-  // Map quiz slugs to database Occasion column values
   const slugToDbOccasion = {
-    // Men's slugs
     'date-night':           'date night',
     'job-interview':        'job interview',
     'festival':             'festival',
@@ -172,7 +193,6 @@ async function fetchOccasionProducts(occasion, budget, fit, gender = 'mens') {
     'night-out':            'night out',
     'smart-casual-work':    'smart casual work',
     'holiday-travel':       'summer holiday',
-    // Women's slugs
     'w-date-night':         'date night',
     'w-job-interview':      'job interview',
     'w-wedding-guest':      'wedding guest',
@@ -182,8 +202,6 @@ async function fetchOccasionProducts(occasion, budget, fit, gender = 'mens') {
     'w-festival':           'festival',
   };
 
-  // Occasion: check each comma-separated value against target
-  // Handles slug → DB value mapping so "wedding-guest" matches "Wedding" in sheet
   function matchesOccasion(product, target) {
     const mappedTarget = slugToDbOccasion[target] || target.toLowerCase();
     return (product['Occasion'] || '')
@@ -192,13 +210,21 @@ async function fetchOccasionProducts(occasion, budget, fit, gender = 'mens') {
       .some(o => o === mappedTarget);
   }
 
-  // Fit: "All" matches any build
   function matchesFit(product, target) {
     const pf = (product['Fit'] || '').trim().toLowerCase();
     return pf === 'all' || pf === 'standard' || pf === target.toLowerCase();
   }
 
-  // Budget cascade: exact → adjacent → any
+  // Season column exists in the sheet but was never being used — this was
+  // why summer date-night guides could still recommend a wool jumper.
+  // Blank Season = year-round staple, always matches. Supports comma-separated
+  // values e.g. "Spring, Summer" the same way the Occasion column does.
+  function matchesSeason(product, target) {
+    const raw = (product['Season'] || '').trim();
+    if (!raw) return true; // no season tagged = works year-round
+    return raw.split(',').map(s => s.trim().toLowerCase()).some(s => s === target.toLowerCase());
+  }
+
   const BUDGET_ORDER = ['Budget', 'Mid', 'Premium'];
   function budgetCascade(pool, tier) {
     const idx = BUDGET_ORDER.indexOf(tier);
@@ -210,21 +236,29 @@ async function fetchOccasionProducts(occasion, budget, fit, gender = 'mens') {
       return pb === tier || adjacent.includes(pb);
     });
     if (result.length >= 2) return result;
-    return pool; // any
+    return pool;
   }
 
-  // Women's database has Dress as a category, men's doesn't
   const CATEGORIES = gender === 'womens'
     ? ['Top', 'Bottoms', 'Dress', 'Jacket', 'Shoes', 'Accessory']
     : ['Top', 'Bottoms', 'Shoes', 'Jacket', 'Hoodie/Jacket', 'Accessory'];
   const selected = {};
 
+  const currentSeason = getCurrentSeason();
+  console.log(`[fetchOccasionProducts] currentSeason=${currentSeason}`);
+
+  // Season-filtered first, same cascade philosophy as budget: prefer a
+  // seasonally-correct match, but never leave a category empty if the
+  // sheet is thin on season-tagged stock for it
+  const occasionFitSeasonPool = allProducts.filter(p => matchesOccasion(p, occasion) && matchesFit(p, fitTier) && matchesSeason(p, currentSeason));
   const occasionFitPool  = allProducts.filter(p => matchesOccasion(p, occasion) && matchesFit(p, fitTier));
   const occasionOnlyPool = allProducts.filter(p => matchesOccasion(p, occasion));
 
   CATEGORIES.forEach(cat => {
-    // Prefer occasion+fit filtered pool; fall back to occasion-only if thin
-    let pool = occasionFitPool.filter(p => p['Category'] === cat);
+    // Prefer season+occasion+fit match first; fall back progressively,
+    // dropping the season filter before dropping fit, and fit before occasion
+    let pool = occasionFitSeasonPool.filter(p => p['Category'] === cat);
+    if (pool.length < 2) pool = occasionFitPool.filter(p => p['Category'] === cat);
     if (pool.length < 2) pool = occasionOnlyPool.filter(p => p['Category'] === cat);
 
     const budgeted = budgetCascade(pool, budgetTier);
@@ -241,10 +275,52 @@ app.post('/api/create-occasion-checkout', async (req, res) => {
   const { occasion, occasionName, budget, fit, occasionDetail, occasionDetail2, style, email } = req.body;
   if (!occasion || !email) return res.status(400).json({ error: 'Missing required fields' });
 
-  const sessionId = crypto.randomBytes(16).toString('hex');
-  saveFreeSession(`occ_${sessionId}`, { occasion, occasionName, budget, fit, occasionDetail, occasionDetail2, style, email, createdAt: Date.now() });
+  const gender = genderFromOccasion(occasion);
+  const user = getUserRecord(email);
 
-  console.log(`Occasion checkout: ${occasion}, session ${sessionId}`);
+  const occasionData = {
+    occasion, occasionName, budget, fit, occasionDetail, occasionDetail2, style, email, gender,
+  };
+
+  // ── PATH 1: Unlimited pass holder — generate directly, no payment ──
+  if (user.unlimitedPaid) {
+    if (user.guideCount >= UNLIMITED_GUIDE_CAP) {
+      console.warn(`[V3] ${email} hit the unlimited guide cap (${UNLIMITED_GUIDE_CAP})`);
+      return res.status(403).json({
+        error: 'guide_cap_reached',
+        message: "You've reached the fair use limit on your unlimited pass. Drop us a line at hello@outfitify.co.uk and we'll sort you out.",
+      });
+    }
+
+    const sessionId = crypto.randomBytes(16).toString('hex');
+    saveFreeSession(`occ_${sessionId}`, { ...occasionData, createdAt: Date.now() });
+    res.json({ free: true, sessionId });
+
+    generateOccasionReport(sessionId, occasionData, email, { isFree: false })
+      .then(() => incrementGuideCount(email))
+      .catch(err => console.error(`Unlimited-tier report failed ${sessionId}:`, err));
+    return;
+  }
+
+  // ── PATH 2: First guide ever for this email — free, no payment ──
+  if (!user.freeUsed) {
+    saveUserRecord(email, { ...user, freeUsed: true });
+
+    const sessionId = crypto.randomBytes(16).toString('hex');
+    saveFreeSession(`occ_${sessionId}`, { ...occasionData, createdAt: Date.now() });
+    res.json({ free: true, sessionId });
+
+    generateOccasionReport(sessionId, occasionData, email, { isFree: true })
+      .then(() => incrementGuideCount(email))
+      .catch(err => console.error(`Free-tier report failed ${sessionId}:`, err));
+    return;
+  }
+
+  // ── PATH 3: Already used free guide, not on unlimited — pay £2.49 for this one ──
+  const sessionId = crypto.randomBytes(16).toString('hex');
+  saveFreeSession(`occ_${sessionId}`, { ...occasionData, createdAt: Date.now() });
+
+  console.log(`Occasion checkout (single, £2.49): ${occasion}, session ${sessionId}`);
 
   try {
     const checkoutSession = await stripe.checkout.sessions.create({
@@ -271,7 +347,7 @@ app.post('/api/create-occasion-checkout', async (req, res) => {
         budget: budget || '', fit: fit || '',
         occasionDetail: occasionDetail || '',
         occasionDetail2: occasionDetail2 || '',
-        style: style || '', email,
+        style: style || '', email, gender,
       },
     });
     res.json({ url: checkoutSession.url });
@@ -281,15 +357,63 @@ app.post('/api/create-occasion-checkout', async (req, res) => {
   }
 });
 
-// ── BUNDLE CHECKOUT ───────────────────────────────────────────────────────────
+// ── UNLIMITED CHECKOUT (V3) ────────────────────────────────────────────────────
+// One-time £9.99 payment, unlocks unlimited guides (soft-capped at 50, backend-only).
+// Same body shape as create-occasion-checkout — used when a customer chooses
+// to go unlimited rather than pay per single guide.
+
+app.post('/api/create-unlimited-checkout', async (req, res) => {
+  const { occasion, occasionName, budget, fit, occasionDetail, occasionDetail2, style, email } = req.body;
+  if (!occasion || !email) return res.status(400).json({ error: 'Missing required fields' });
+
+  const gender = genderFromOccasion(occasion);
+  const sessionId = crypto.randomBytes(16).toString('hex');
+  saveFreeSession(`occ_${sessionId}`, { occasion, occasionName, budget, fit, occasionDetail, occasionDetail2, style, email, gender, createdAt: Date.now() });
+
+  console.log(`Unlimited checkout: ${occasion}, session ${sessionId}`);
+
+  try {
+    const checkoutSession = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      customer_creation: 'always',
+      allow_promotion_codes: true,
+      line_items: [{
+        price_data: {
+          currency: 'gbp',
+          product_data: {
+            name: 'Outfitify — Unlimited Guides',
+            description: 'Unlimited personalised style guides, forever. One-time payment, no subscription.',
+            images: ['https://outfitify.co.uk/assets/images/image04.png'],
+          },
+          unit_amount: 999,
+        },
+        quantity: 1,
+      }],
+      mode: 'payment',
+      success_url: `${process.env.SUCCESS_URL || 'https://success.outfitify.co.uk'}?token={CHECKOUT_SESSION_ID}&sid=${sessionId}&unlimited=true&value=9.99`,
+      cancel_url: 'https://occasions.outfitify.co.uk',
+      metadata: {
+        sessionId, tier: 'unlimited', occasion, occasionName,
+        budget: budget || '', fit: fit || '',
+        occasionDetail: occasionDetail || '',
+        occasionDetail2: occasionDetail2 || '',
+        style: style || '', email, gender,
+      },
+    });
+    res.json({ url: checkoutSession.url });
+  } catch (err) {
+    console.error('Unlimited checkout error:', err);
+    res.status(500).json({ error: 'Payment setup failed' });
+  }
+});
+
+// ── BUNDLE CHECKOUT (legacy — kept intact, no longer used by the V3 pricing ladder) ──
 
 app.post('/api/create-bundle-checkout', async (req, res) => {
   const { occasions, bundleSize, email } = req.body;
   if (!occasions || !Array.isArray(occasions) || occasions.length < 2 || !email) {
     return res.status(400).json({ error: 'Missing required fields' });
   }
-  // occasions array now contains per-occasion answers:
-  // [{ slug, name, budget, fit, occasionDetail, occasionDetail2, style }, ...]
 
   const size = Math.min(Math.max(parseInt(bundleSize) || occasions.length, 2), 3);
   const priceMap  = { 2: 399, 3: 499 };
@@ -298,7 +422,6 @@ app.post('/api/create-bundle-checkout', async (req, res) => {
   const occasionNames = occasions.map(o => o.name || o.slug).join(', ');
 
   const sessionId = crypto.randomBytes(16).toString('hex');
-  // Store full occasions data in filesystem — Stripe metadata has 500 char limit
   saveFreeSession(`bundle_${sessionId}`, { occasions, bundleSize: size, email, createdAt: Date.now() });
 
   console.log(`Bundle checkout: ${size} guides (${occasionNames}), session ${sessionId}`);
@@ -324,7 +447,6 @@ app.post('/api/create-bundle-checkout', async (req, res) => {
       success_url: `${process.env.SUCCESS_URL || 'https://success.outfitify.co.uk'}?token={CHECKOUT_SESSION_ID}&sid=${sessionId}&bundle=true&bundleSize=${size}&value=${(unitAmount/100).toFixed(2)}`,
       cancel_url: 'https://occasions.outfitify.co.uk',
       metadata: {
-        // Only pass sessionId — full occasions data stored in filesystem
         sessionId, tier: 'bundle', bundleSize: String(size), email,
       },
     });
@@ -356,17 +478,13 @@ app.post('/webhook', async (req, res) => {
     console.log(`Webhook: tier=${tier} session=${sessionId} email=${userEmail}`);
     if (!userEmail) console.error(`No email for session ${sessionId}`);
 
-    if (tier === 'bundle') {
-      // Load full occasions data from filesystem (too large for Stripe metadata)
-      const bundleSession = getFreeSession(`bundle_${sessionId}`);
-      const occasions = bundleSession?.occasions || [];
-      if (!occasions.length) console.error(`Bundle: no occasions data found for session ${sessionId}`);
-      generateBundleReports(sessionId, { occasions }, userEmail)
-        .catch(err => console.error(`Bundle error ${sessionId}:`, err));
+    if (tier === 'unlimited') {
+      // Mark this email as an unlimited pass holder, then generate the
+      // occasion guide they were actually trying to get when they upgraded
+      const record = getUserRecord(userEmail);
+      saveUserRecord(userEmail, { ...record, freeUsed: true, unlimitedPaid: true });
 
-    } else if (tier === 'occasion') {
       const occasion = session.metadata.occasion;
-      // FIX: derive gender from occasion slug — never rely on metadata alone
       const gender = session.metadata.gender || genderFromOccasion(occasion);
       generateOccasionReport(sessionId, {
         occasion,
@@ -377,10 +495,34 @@ app.post('/webhook', async (req, res) => {
         occasionDetail2: session.metadata.occasionDetail2,
         style:           session.metadata.style,
         gender,
-      }, userEmail).catch(err => console.error(`Occasion error ${sessionId}:`, err));
+      }, userEmail, { isFree: false })
+        .then(() => incrementGuideCount(userEmail))
+        .catch(err => console.error(`Unlimited-upgrade error ${sessionId}:`, err));
+
+    } else if (tier === 'bundle') {
+      const bundleSession = getFreeSession(`bundle_${sessionId}`);
+      const occasions = bundleSession?.occasions || [];
+      if (!occasions.length) console.error(`Bundle: no occasions data found for session ${sessionId}`);
+      generateBundleReports(sessionId, { occasions }, userEmail)
+        .catch(err => console.error(`Bundle error ${sessionId}:`, err));
+
+    } else if (tier === 'occasion') {
+      const occasion = session.metadata.occasion;
+      const gender = session.metadata.gender || genderFromOccasion(occasion);
+      generateOccasionReport(sessionId, {
+        occasion,
+        occasionName:    session.metadata.occasionName,
+        budget:          session.metadata.budget,
+        fit:             session.metadata.fit,
+        occasionDetail:  session.metadata.occasionDetail,
+        occasionDetail2: session.metadata.occasionDetail2,
+        style:           session.metadata.style,
+        gender,
+      }, userEmail, { isFree: false })
+        .then(() => incrementGuideCount(userEmail))
+        .catch(err => console.error(`Occasion error ${sessionId}:`, err));
 
     } else {
-      // Legacy style blueprint
       generateAndStoreReport(sessionId, {
         budget:    session.metadata.budget,
         struggles: session.metadata.struggles,
@@ -415,19 +557,19 @@ app.get('/api/download/:token', (req, res) => {
 
 // ── GENERATE SINGLE OCCASION REPORT ──────────────────────────────────────────
 
-async function generateOccasionReport(sessionId, occasionData, userEmail) {
+async function generateOccasionReport(sessionId, occasionData, userEmail, options = {}) {
+  const isFree = !!options.isFree;
   activeJobs++;
-  console.log(`Generating occasion report: ${occasionData.occasion} session=${sessionId} (active=${activeJobs})`);
+  console.log(`Generating occasion report: ${occasionData.occasion} session=${sessionId} isFree=${isFree} (active=${activeJobs})`);
   try {
-    // FIX: always resolve gender from occasion slug as source of truth
-  const gender = occasionData.gender || genderFromOccasion(occasionData.occasion);
-  const products = await fetchOccasionProducts(occasionData.occasion, occasionData.budget, occasionData.fit, gender);
+    const gender = occasionData.gender || genderFromOccasion(occasionData.occasion);
+    const products = await fetchOccasionProducts(occasionData.occasion, occasionData.budget, occasionData.fit, gender);
     const reportContent = await generateOccasionContent(occasionData, products);
     const pdfPath = await buildOccasionPDF(reportContent, occasionData, products);
     const token = crypto.randomBytes(32).toString('hex');
     saveDownload(sessionId, { token, pdfPath, email: userEmail, quizData: occasionData, tier: 'occasion', createdAt: Date.now() });
     const downloadUrl = `${process.env.BASE_URL}/api/download/${token}`;
-    await sendOccasionEmail(userEmail, downloadUrl, occasionData.occasionName, sessionId);
+    await sendOccasionEmail(userEmail, downloadUrl, occasionData.occasionName, sessionId, isFree);
     console.log(`Occasion report ready: ${sessionId}`);
   } catch (err) {
     console.error(`Occasion report failed ${sessionId}:`, err);
@@ -447,7 +589,6 @@ async function generateBundleReports(sessionId, bundleData, userEmail) {
   const results = [];
 
   for (const occ of occasions) {
-    // Each occasion carries its own answers from the per-occasion quiz
     const occasionData = {
       occasion:        occ.slug,
       occasionName:    occ.name,
@@ -459,7 +600,6 @@ async function generateBundleReports(sessionId, bundleData, userEmail) {
     };
     try {
       console.log(`Bundle: generating ${occ.name} (budget=${occ.budget}, fit=${occ.fit})...`);
-      // FIX: derive gender from slug so women's occasions hit Womens tab
       const gender = occ.gender || genderFromOccasion(occ.slug);
       const products = await fetchOccasionProducts(occ.slug, occ.budget, occ.fit, gender);
       const reportContent = await generateOccasionContent(occasionData, products);
@@ -476,7 +616,6 @@ async function generateBundleReports(sessionId, bundleData, userEmail) {
     }
   }
 
-  // Store bundle index on main sessionId
   saveDownload(sessionId, { token: crypto.randomBytes(32).toString('hex'), bundle: true, results, email: userEmail, createdAt: Date.now() });
 
   const successful = results.filter(r => r.success);
@@ -487,6 +626,16 @@ async function generateBundleReports(sessionId, bundleData, userEmail) {
 }
 
 // ── CLAUDE: GENERATE OCCASION CONTENT ────────────────────────────────────────
+
+// Derives current UK season from today's date — used to keep fabric/layering
+// advice realistic (no cable knits recommended in July, no linen in January)
+function getCurrentSeason() {
+  const month = new Date().getMonth() + 1; // 1-12
+  if (month >= 3 && month <= 5) return 'Spring';
+  if (month >= 6 && month <= 8) return 'Summer';
+  if (month >= 9 && month <= 11) return 'Autumn';
+  return 'Winter';
+}
 
 async function generateOccasionContent(occasionData, products) {
   const productList = [];
@@ -577,7 +726,6 @@ HOLIDAY / TRAVEL RULES:
 - occasionDetail is destination — beach vs city break vs long-haul all need different approaches
 - occasionDetail2 is trip length — longer trips need more versatile pieces`,
 
-    // ── WOMEN'S OCCASION RULES ────────────────────────────────────────────────
     'w-date-night': `
 WOMEN'S DATE NIGHT RULES:
 - This is a women's styling guide — all advice must be relevant to women's fashion
@@ -682,11 +830,13 @@ OCCASION DETAIL 2 (Q4): ${occasionData.occasionDetail2 || 'Not specified'}
 BUDGET PER ITEM: ${occasionData.budget}
 ${isWomens ? 'BODY SHAPE' : 'BUILD'}: ${occasionData.fit}
 STYLE PREFERENCE: ${occasionData.style}
+CURRENT SEASON: ${getCurrentSeason()} — this is genuinely today's season in the UK. Use it to keep fabric weight and layering realistic. Someone taking this quiz right now needs an outfit for THIS time of year unless the occasion type itself implies otherwise (e.g. Summer Holiday, Festival)
 GENDER: ${isWomens ? 'Women\'s guide — all product picks and styling advice must be for women' : 'Men\'s guide — all product picks and styling advice must be for men'}
 
 ${rules}
 
 GENERAL RULES FOR ALL OCCASIONS:
+- SEASON CHECK — CRITICAL: fabric weight must match the current season given above. In Spring/Summer, do not recommend heavy knits, wool, thick denim, or a jacket layer unless the occasion genuinely calls for one regardless of temperature (e.g. a wedding or interview still needs a blazer in summer — just in a lighter fabric like cotton or linen-blend, not wool). In Autumn/Winter, lightweight-only pieces (linen, thin cotton tees with no layer) are wrong unless the occasion is explicitly indoor and heated. This check overrides generic occasion assumptions — a "date night" guide generated in July should not default to the same knit-and-jacket combination as one generated in December
 - The recommended products are illustrative examples that match the styling advice — they do not need to form a perfectly coordinated outfit. Each product should be individually appropriate for the occasion and build.
 - Never recommend a product that does not suit the occasion even if it is the only option
 - Better to recommend 2 excellent products than 3 where one is wrong
@@ -720,11 +870,13 @@ OUTFIT FORMULA RULES — CRITICAL:
 
 TONE — CRITICAL:
 - Write like a real person talking, not a document being generated
-- Direct, warm and specific — like advice from a knowledgeable friend
+- Direct, warm and specific — like advice from a knowledgeable friend, not a corporate report
 - BANNED WORDS — never use any of these under any circumstances: system, intentional, cohesive, silhouette, taper, tapered, aesthetic, palette, framework, elevate, curated, layering piece, overshirt, game changer, key pieces, wardrobe staples, effortless, timeless
-- Replace any fashion jargon with plain English at all times
-- Every sentence must be specific to this person's occasion, build and budget
-- Short punchy sentences, no waffle
+- ALSO AVOID sounding like marketing copy: never use "unlock", "level up", "game-changing", "perfect for", "you'll love", or any exclamation marks
+- Vary sentence length like a real person would — mix short, blunt sentences with the occasional longer one, rather than every sentence being the same clipped length
+- It is fine, even good, to sound slightly informal — contractions (you're, don't, it's) are encouraged over the formal version
+- Every sentence must be specific to this person's occasion, build and budget — never a sentence that could apply to any customer
+- Short punchy sentences mostly, no waffle
 - SELF-CHECK: Before returning your response, re-read every field and replace any banned word you find. There are no exceptions.
 
 AVAILABLE PRODUCTS — only recommend products from this exact list:
@@ -741,6 +893,10 @@ Respond with JSON only, no markdown:
   },
   "whatToAvoid": "MANDATORY — 2-3 specific things to avoid for this occasion and build. Written like a friend telling them honestly. Name specific items or fits, not just categories. This field must never be empty.",
   "stylistTip": "One insider tip most people do not know — specific to this occasion and this build. Should feel like a genuine secret, not generic advice.",
+  "quickRecap": [
+    "3-4 short checklist items, each under 8 words, covering the essentials to double-check before leaving — e.g. 'Jacket on, sleeves pushed up', 'Boots not trainers', 'One less thing than you think'. Specific to this outfit, not generic."
+  ],
+  "restyleTip": "One sentence on how to re-wear the key piece from this outfit for a DIFFERENT occasion in future — e.g. 'That harrington works just as well for a casual daytime look, just swap the boots for trainers.' Must reference an actual piece from recommendedPieces and a genuinely different occasion type.",
   "recommendedPieces": [
     {
       "category": "category name",
@@ -768,9 +924,12 @@ Rules:
 - JSON only, no markdown
 - whatToAvoid is MANDATORY — never return an empty string. Always include 2-3 specific things to avoid for this occasion and build
 - Top and Bottoms are MANDATORY — always include at least one Top and one Bottoms pick. If you cannot find a suitable product in either category the guide fails. These two are non-negotiable
+- Accessory — you may include ONE accessory pick (5th and final item) if a genuinely suitable product exists in the list AND it's the kind of finishing touch a real stylist would actually add — a watch, belt, bag, sunglasses, jewellery. Only include it if it's a real fit for the occasion and build, never just to fill the slot. If nothing suitable exists, omit it — 4 strong picks beats 5 where the 5th feels forced
 - Shoes — always include if a suitable product exists in the list. If no suitable shoe exists for the occasion, omit it — the PDF will show a "Complete Your Look" tip instead
 - Jacket or layer — include if the occasion warrants it (Date Night, Job Interview, Wedding Guest, Night Out, Smart Casual Work) and a suitable product exists. If none exists, omit — the PDF will handle it
 - Festival and Summer Holiday — jacket is optional, only include if genuinely appropriate
+- quickRecap is MANDATORY — always 3-4 short items, never empty
+- restyleTip is MANDATORY — always reference a real picked piece and a genuinely different occasion, never empty
 - Never describe a piece in the outfitFormula without picking it, and never pick a piece without describing it in the formula
 - Only use products from the list — do not invent products
 - Every field must be specific to the occasion and their answers
@@ -808,183 +967,267 @@ async function buildOccasionPDF(content, occasionData, products) {
   const stream = fs.createWriteStream(pdfPath);
   doc.pipe(stream);
 
-  const BG = '#0A0A0A', HEADER = '#111111', BORDER = '#2A2520', GREEN = '#B8A898';
-  const WHITE = '#F2EDE6', GREY = '#7A6E66', MUTED = '#C8BFB5';
-  const CARD = '#141210', CARD2 = '#1C1916', RED = '#C4886A';
+  // Register real fonts — matches the actual website (Playfair Display + DM Sans)
+  // instead of falling back to generic Helvetica
+  doc.registerFont('Serif',        path.join(FONTS_DIR, 'PlayfairDisplay-Medium.ttf'));
+  doc.registerFont('Serif-Bold',   path.join(FONTS_DIR, 'PlayfairDisplay-Bold.ttf'));
+  doc.registerFont('Serif-Italic', path.join(FONTS_DIR, 'PlayfairDisplay-MediumItalic.ttf'));
+  doc.registerFont('Sans',         path.join(FONTS_DIR, 'DMSans-Regular.ttf'));
+  doc.registerFont('Sans-Medium',  path.join(FONTS_DIR, 'DMSans-Medium.ttf'));
+  doc.registerFont('Sans-Bold',    path.join(FONTS_DIR, 'DMSans-Bold.ttf'));
+
+  // Brand colours — now light/editorial, matching the actual website exactly,
+  // instead of the old inverted dark theme the site never used
+  const isWomens = occasionData.gender === 'womens';
+  const WHITE = '#ffffff', OFFWHITE = '#f7f5f2', INK = '#1c1917', INK_MID = '#44403c',
+        INK_LIGHT = '#78716c', BORDER = '#e7e3de',
+        ACCENT = isWomens ? '#a05a52' : '#92714a',   // terracotta / tan — matches site exactly
+        RED = '#c4886a';
+
+  // Stylist sign-off — always Joshua, regardless of guide gender
+  const STYLIST_NAME = 'Joshua';
+
   const PW = 595, PH = 842, PAD = 50, IW = 495;
 
-  const bg   = () => doc.rect(0, 0, PW, PH).fill(BG);
-  const lcard = (x, y, w, h, accent) => { doc.rect(x, y, w, h).fill(CARD); doc.rect(x, y, 2, h).fill(accent || GREEN); };
-  const textH = (str, fontSize, fontName, width) => { doc.fontSize(fontSize).font(fontName || 'Helvetica'); return doc.heightOfString(str || '', { width, lineGap: 2 }); };
+  const bg = () => doc.rect(0, 0, PW, PH).fill(WHITE);
+  const textH = (str, fontSize, fontName, width) => {
+    doc.fontSize(fontSize).font(fontName || 'Sans');
+    return doc.heightOfString(str || '', { width, lineGap: 2 });
+  };
 
   function pageHeader(sub) {
-    doc.rect(0, 0, PW, 36).fill(HEADER);
-    doc.rect(0, 35, PW, 1).fill(BORDER);
-    doc.fontSize(8).fillColor(WHITE).font('Helvetica-Bold').text('OUTFITIFY', 0, 11, { width: PW, align: 'center', characterSpacing: 6 });
-    if (sub) doc.fontSize(6.5).fillColor(GREY).font('Helvetica').text(sub.toUpperCase(), 0, 22, { width: PW, align: 'center', characterSpacing: 2 });
+    doc.rect(0, 0, PW, 60).fill(WHITE);
+    doc.rect(0, 60, PW, 1).fill(BORDER);
+    // Logo — tracked uppercase Playfair Display, matching the site wordmark exactly
+    doc.fontSize(13).fillColor(INK).font('Serif-Bold')
+      .text('O U T F I T I F Y', 0, 18, { width: PW, align: 'center', characterSpacing: 3 });
+    if (sub) doc.fontSize(7).fillColor(INK_LIGHT).font('Sans')
+      .text(sub.toUpperCase(), 0, 38, { width: PW, align: 'center', characterSpacing: 2 });
   }
 
   function footer() {
-    doc.rect(0, PH - 28, PW, 28).fill(HEADER);
-    doc.rect(0, PH - 28, PW, 1).fill(BORDER);
-    doc.fontSize(7).fillColor(GREY).font('Helvetica').text('OUTFITIFY.CO.UK  ·  OCCASION STYLE GUIDE', 0, PH - 15, { width: PW, align: 'center', characterSpacing: 1 });
+    doc.rect(0, PH - 30, PW, 30).fill(OFFWHITE);
+    doc.rect(0, PH - 30, PW, 1).fill(BORDER);
+    doc.fontSize(7).fillColor(INK_LIGHT).font('Sans')
+      .text('OUTFITIFY.CO.UK  ·  OCCASION STYLE GUIDE', 0, PH - 18, { width: PW, align: 'center', characterSpacing: 1 });
   }
 
   function sectionLabel(text, y, color) {
-    doc.fontSize(6.5).fillColor(color || GREEN).font('Helvetica-Bold').text(text, PAD, y, { characterSpacing: 3 });
-    doc.moveTo(PAD, y + 12).lineTo(PAD + IW, y + 12).strokeColor(BORDER).lineWidth(0.5).stroke();
+    doc.fontSize(7).fillColor(color || ACCENT).font('Sans-Bold').text(text, PAD, y, { characterSpacing: 3 });
+    doc.moveTo(PAD, y + 13).lineTo(PAD + IW, y + 13).strokeColor(BORDER).lineWidth(0.5).stroke();
   }
+
+  function lcard(x, y, w, h, accent) {
+    doc.rect(x, y, w, h).fill(OFFWHITE);
+    doc.rect(x, y, 2, h).fill(accent || ACCENT);
+  }
+
+  // CTA pill button — replaces the old plain underlined text link, gives
+  // every product a genuine tappable call-to-action (this is the EPC lever)
+  function ctaPill(x, y, w, h, label) {
+    doc.roundedRect(x, y, w, h, h / 2).fill(ACCENT);
+    doc.fontSize(8.5).fillColor(WHITE).font('Sans-Bold')
+      .text(label, x, y + (h - 10) / 2, { width: w, align: 'center' });
+  }
+
+  // Generic per-domain image fetch — fixes the bug where images were hardcoded
+  // to always claim they came from Zara (Referer: 'https://www.zara.com/'),
+  // which silently broke images from every other retailer in your sheet.
+  // This derives the referer from each image's own domain instead.
+  async function fetchProductImage(imageUrl) {
+    if (!imageUrl) return null;
+    try {
+      const domain = new URL(imageUrl).hostname;
+      const r = await axios.get(imageUrl, {
+        responseType: 'arraybuffer',
+        timeout: 5000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Referer': `https://${domain}/`,
+          'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+        },
+      });
+      return Buffer.from(r.data);
+    } catch (err) {
+      console.warn(`[image fetch] failed for ${imageUrl}: ${err.message}`);
+      return null; // falls back to a plain placeholder box — never breaks layout
+    }
+  }
+
+  const allProductItems = Object.values(products).flat();
 
   // ── PAGE 1 ────────────────────────────────────────────────────────────────
   bg();
-  doc.rect(0, 40, PW, 180).fill('#0E0C0A');
-  doc.moveTo(0, 220).lineTo(PW, 220).strokeColor(BORDER).lineWidth(0.5).stroke();
   pageHeader('Occasion Style Guide');
 
-  doc.fontSize(9).fillColor(GREEN).font('Helvetica-Bold').text("YOUR STYLIST'S VERDICT", PAD, 56, { characterSpacing: 3 });
-  const titleParts = (content.occasionTitle || occasionData.occasionName).toUpperCase().split(' ');
+  doc.fontSize(9).fillColor(ACCENT).font('Sans-Bold').text("YOUR STYLIST'S VERDICT", PAD, 84, { characterSpacing: 3 });
+  const titleParts = (content.occasionTitle || occasionData.occasionName).split(' ');
   const mid = Math.ceil(titleParts.length / 2);
-  doc.fontSize(38).fillColor(WHITE).font('Helvetica-Bold').text(titleParts.slice(0, mid).join(' '), PAD, 76);
-  doc.fontSize(38).fillColor(GREEN).font('Helvetica-Bold').text(titleParts.slice(mid).join(' '), PAD, 118);
+  doc.fontSize(36).fillColor(INK).font('Serif-Bold').text(titleParts.slice(0, mid).join(' '), PAD, 102);
+  doc.fontSize(36).fillColor(ACCENT).font('Serif-Bold').text(titleParts.slice(mid).join(' '), PAD, 142);
 
-  const noteH = Math.max(textH(content.openingNote || '', 10, 'Helvetica', IW - 28) + 36, 80);
-  lcard(PAD, 232, IW, noteH, GREEN);
-  doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold').text('A NOTE FROM YOUR STYLIST', PAD + 14, 242, { characterSpacing: 2 });
-  doc.fontSize(10).fillColor(MUTED).font('Helvetica').text(content.openingNote || '', PAD + 14, 258, { width: IW - 28, lineGap: 3 });
+  const noteH = Math.max(textH(content.openingNote || '', 10, 'Sans', IW - 28) + 36, 80);
+  lcard(PAD, 210, IW, noteH);
+  doc.fontSize(7).fillColor(ACCENT).font('Sans-Bold').text('A NOTE FROM YOUR STYLIST', PAD + 14, 220, { characterSpacing: 2 });
+  doc.fontSize(10).fillColor(INK_MID).font('Sans').text(content.openingNote || '', PAD + 14, 236, { width: IW - 28, lineGap: 3 });
 
-  let curY = 232 + noteH + 24;
+  let curY = 210 + noteH + 24;
 
   sectionLabel('THE OUTFIT', curY);
-  curY += 20;
-  const headlineH = Math.max(textH(content.whatToWear?.headline || '', 13, 'Helvetica-Bold', IW - 28) + 28, 52);
-  lcard(PAD, curY, IW, headlineH, GREEN);
-  doc.fontSize(13).fillColor(WHITE).font('Helvetica-Bold').text(content.whatToWear?.headline || '', PAD + 14, curY + 14, { width: IW - 28, lineGap: 2 });
+  curY += 21;
+  const headlineH = Math.max(textH(content.whatToWear?.headline || '', 13, 'Serif-Bold', IW - 28) + 28, 52);
+  lcard(PAD, curY, IW, headlineH);
+  doc.fontSize(13).fillColor(INK).font('Serif-Bold').text(content.whatToWear?.headline || '', PAD + 14, curY + 14, { width: IW - 28, lineGap: 2 });
   curY += headlineH + 12;
 
-  const formulaH = textH(content.whatToWear?.outfitFormula || '', 10, 'Helvetica', IW) + 8;
-  doc.fontSize(10).fillColor(MUTED).font('Helvetica').text(content.whatToWear?.outfitFormula || '', PAD, curY, { width: IW, lineGap: 4 });
+  const formulaH = textH(content.whatToWear?.outfitFormula || '', 10, 'Sans', IW) + 8;
+  doc.fontSize(10).fillColor(INK_MID).font('Sans').text(content.whatToWear?.outfitFormula || '', PAD, curY, { width: IW, lineGap: 4 });
   curY += formulaH + 16;
 
   if (curY + 60 < PH - 80) {
-    sectionLabel('FIT ADVICE FOR YOUR BUILD', curY);
-    curY += 20;
-    const fitH = Math.max(textH(content.whatToWear?.fitAdvice || '', 9.5, 'Helvetica', IW - 28) + 28, 52);
-    lcard(PAD, curY, IW, fitH, GREEN);
-    doc.fontSize(9.5).fillColor(MUTED).font('Helvetica').text(content.whatToWear?.fitAdvice || '', PAD + 14, curY + 14, { width: IW - 28, lineGap: 3 });
+    sectionLabel(isWomens ? 'FIT ADVICE FOR YOUR SHAPE' : 'FIT ADVICE FOR YOUR BUILD', curY);
+    curY += 21;
+    const fitH = Math.max(textH(content.whatToWear?.fitAdvice || '', 9.5, 'Sans', IW - 28) + 28, 52);
+    lcard(PAD, curY, IW, fitH);
+    doc.fontSize(9.5).fillColor(INK_MID).font('Sans').text(content.whatToWear?.fitAdvice || '', PAD + 14, curY + 14, { width: IW - 28, lineGap: 3 });
     curY += fitH + 16;
   }
 
   if (curY + 60 < PH - 80 && (content.whatToAvoid || '').trim().length > 10) {
     sectionLabel('WHAT TO AVOID', curY, RED);
-    curY += 20;
-    const avoidH = Math.max(textH(content.whatToAvoid, 9.5, 'Helvetica', IW - 28) + 28, 52);
+    curY += 21;
+    const avoidH = Math.max(textH(content.whatToAvoid, 9.5, 'Sans', IW - 28) + 28, 52);
     lcard(PAD, curY, IW, avoidH, RED);
-    doc.fontSize(9.5).fillColor(MUTED).font('Helvetica').text(content.whatToAvoid, PAD + 14, curY + 14, { width: IW - 28, lineGap: 3 });
+    doc.fontSize(9.5).fillColor(INK_MID).font('Sans').text(content.whatToAvoid, PAD + 14, curY + 14, { width: IW - 28, lineGap: 3 });
     curY += avoidH + 16;
+  }
+
+  // Quick recap checklist — new: gives a real "before you leave" checklist,
+  // the kind of thing a real stylist actually hands you
+  if (curY + 70 < PH - 80 && Array.isArray(content.quickRecap) && content.quickRecap.length > 0) {
+    sectionLabel('QUICK RECAP BEFORE YOU LEAVE', curY);
+    curY += 21;
+    const recapH = content.quickRecap.length * 16 + 20;
+    lcard(PAD, curY, IW, recapH);
+    let recapY = curY + 12;
+    content.quickRecap.forEach(item => {
+      doc.fontSize(9.5).fillColor(ACCENT).font('Sans-Bold').text('✓', PAD + 14, recapY, { lineBreak: false });
+      doc.fontSize(9.5).fillColor(INK_MID).font('Sans').text(item, PAD + 30, recapY, { width: IW - 44, lineBreak: false });
+      recapY += 16;
+    });
+    curY += recapH + 16;
   }
 
   footer();
 
-  // ── PAGE 2 — PRODUCT PICKS + WHERE TO SHOP ─────────────────────────────────
+  // ── PAGE 2 — PRODUCT PICKS (now with real images + CTA buttons) ────────────
   doc.addPage();
   bg();
   pageHeader('Your Picks');
 
-  doc.rect(0, 40, PW, 90).fill('#0E0C0A');
-  doc.moveTo(0, 130).lineTo(PW, 130).strokeColor(BORDER).lineWidth(0.5).stroke();
+  const pieces = (content.recommendedPieces || []).slice(0, 5);
 
-  const pieces = (content.recommendedPieces || []).slice(0, 4);
-  doc.fontSize(24).fillColor(WHITE).font('Helvetica-Bold').text('HAND-PICKED', PAD, 52);
-  doc.fontSize(24).fillColor(GREEN).font('Helvetica-Bold').text('FOR THIS OCCASION', PAD, 80);
-  doc.fontSize(9).fillColor(GREY).font('Helvetica-Oblique')
-    .text(`Products matched to your build, your budget and ${(occasionData.occasionName || '').toLowerCase()} — click any name to buy`, PAD, 118, { width: IW });
+  // Fetch all product images up front, in parallel
+  const imageBuffers = await Promise.all(pieces.map(piece => {
+    const match = allProductItems.find(p => p['Item Name'] === piece.name);
+    return fetchProductImage(match?.['Image URL']);
+  }));
 
-  const allProductItems = Object.values(products).flat();
+  doc.fontSize(22).fillColor(INK).font('Serif-Bold').text('HAND-PICKED', PAD, 78);
+  doc.fontSize(22).fillColor(ACCENT).font('Serif-Bold').text('FOR THIS OCCASION', PAD, 106);
+  doc.fontSize(9).fillColor(INK_LIGHT).font('Sans-Medium')
+    .text(`Products matched to your ${isWomens ? 'shape' : 'build'}, your budget and ${(occasionData.occasionName || '').toLowerCase()}`, PAD, 142, { width: IW });
 
-  // ── STYLIST TIP — guaranteed slot at top of page 2, below header ──
-  let pieceY = 148;
+  let pieceY = 170;
+
   if (content.stylistTip) {
-    const tipH = Math.max(textH(content.stylistTip, 9, 'Helvetica', IW - 28) + 28, 44);
-    doc.rect(PAD, pieceY, IW, tipH).fill(CARD2);
-    doc.rect(PAD, pieceY, IW, tipH).strokeColor(GREEN).lineWidth(0.5).stroke();
-    doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold').text("STYLIST'S TIP", PAD + 14, pieceY + 9, { characterSpacing: 2 });
-    doc.fontSize(9).fillColor(MUTED).font('Helvetica').text(content.stylistTip, PAD + 14, pieceY + 21, { width: IW - 28, lineGap: 2 });
-    pieceY += tipH + 10;
+    const tipH = Math.max(textH(content.stylistTip, 9, 'Sans', IW - 28) + 28, 44);
+    doc.rect(PAD, pieceY, IW, tipH).fill(OFFWHITE);
+    doc.rect(PAD, pieceY, IW, tipH).strokeColor(ACCENT).lineWidth(0.5).stroke();
+    doc.fontSize(7).fillColor(ACCENT).font('Sans-Bold').text("STYLIST'S TIP", PAD + 14, pieceY + 9, { characterSpacing: 2 });
+    doc.fontSize(9).fillColor(INK_MID).font('Sans').text(content.stylistTip, PAD + 14, pieceY + 21, { width: IW - 28, lineGap: 2 });
+    pieceY += tipH + 12;
   }
 
-  const priceColW = 80;
+  const IMG_SIZE = 84;
 
   for (let i = 0; i < pieces.length; i++) {
     const piece = pieces[i];
-    const textX    = PAD + 14;
-    const priceColX = PAD + IW - priceColW;
-    const textW    = priceColX - textX - 10;
+    const hasImage = !!imageBuffers[i];
+    const textX = PAD + 14 + (hasImage ? IMG_SIZE + 14 : 0);
+    const priceRowH = 30;
+    const textW = PAD + IW - 14 - textX;
 
-    // Dynamic card height: top pad + cat label + name + gap + why + bottom pad
-    doc.fontSize(11).font('Helvetica-Bold');
+    doc.fontSize(11).font('Serif-Bold');
     const nameH = doc.heightOfString(piece.name || '', { width: textW });
-    doc.fontSize(8.5).font('Helvetica');
+    doc.fontSize(8.5).font('Sans');
     const whyH = doc.heightOfString(piece.why || '', { width: textW, lineGap: 1.5 });
-    const CARD_H = Math.max(64, 14 + 12 + 6 + nameH + 6 + whyH + 14);
+
+    const contentHgt = 14 + 12 + 6 + nameH + 6 + whyH;
+    const CARD_H = Math.max(hasImage ? IMG_SIZE + 28 : 64, contentHgt + priceRowH + 20);
 
     if (pieceY + CARD_H > PH - 100) break;
 
-    // Card background + stone left accent bar
-    doc.rect(PAD, pieceY, IW, CARD_H).fill(CARD);
+    doc.rect(PAD, pieceY, IW, CARD_H).fill(OFFWHITE);
     doc.rect(PAD, pieceY, IW, CARD_H).strokeColor(BORDER).lineWidth(0.5).stroke();
-    doc.rect(PAD, pieceY, 2, CARD_H).fill(GREEN);
+    doc.rect(PAD, pieceY, 2, CARD_H).fill(ACCENT);
+
+    // Product image — fixed box, clipped + cover-fit so it never distorts
+    // or breaks the card layout, regardless of source image aspect ratio
+    if (hasImage) {
+      const imgX = PAD + 14, imgY = pieceY + 14;
+      try {
+        doc.save();
+        doc.rect(imgX, imgY, IMG_SIZE, IMG_SIZE).clip();
+        doc.image(imageBuffers[i], imgX, imgY, { width: IMG_SIZE, height: IMG_SIZE, cover: [IMG_SIZE, IMG_SIZE] });
+        doc.restore();
+      } catch {
+        doc.rect(imgX, imgY, IMG_SIZE, IMG_SIZE).fill(BORDER);
+      }
+    }
+
+    const catY = pieceY + 14;
+    doc.fontSize(7).fillColor(ACCENT).font('Sans-Bold')
+      .text((piece.category || '').toUpperCase(), textX, catY, { width: textW, lineBreak: false, characterSpacing: 1.5 });
+
+    const nameY = catY + 16;
+    doc.fontSize(11).fillColor(INK).font('Serif-Bold').text(piece.name || '', textX, nameY, { width: textW });
+
+    const whyY = nameY + nameH + 6;
+    doc.fontSize(8.5).fillColor(INK_LIGHT).font('Sans').text(piece.why || '', textX, whyY, { width: textW, lineGap: 1.5 });
 
     const productUrl = piece.url || allProductItems.find(p => p['Item Name'] === piece.name)?.['Product URL'] || null;
 
-    // Category label
-    const catY  = pieceY + 14;
-    doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold')
-      .text((piece.category || '').toUpperCase(), textX, catY, { width: textW, lineBreak: false, characterSpacing: 1.5 });
+    const bottomY = pieceY + CARD_H - 34;
+    doc.fontSize(14).fillColor(INK).font('Serif-Bold').text(piece.price || '', textX, bottomY, { lineBreak: false });
+    doc.fontSize(8).fillColor(INK_LIGHT).font('Sans').text(piece.brand || '', textX + 60, bottomY + 3, { lineBreak: false });
 
-    // Product name — clickable if URL exists
-    const nameY = catY + 18;
-    doc.fontSize(11).fillColor(productUrl ? GREEN : WHITE).font('Helvetica-Bold');
-    const actualNameH = doc.heightOfString(piece.name || '', { width: textW });
-    doc.text(piece.name || '', textX, nameY, { width: textW, ...(productUrl ? { link: productUrl, underline: true } : {}) });
+    if (productUrl) {
+      const btnW = 100, btnH = 26;
+      ctaPill(PAD + IW - 14 - btnW, bottomY - 2, btnW, btnH, 'Shop this →');
+      doc.link(PAD + IW - 14 - btnW, bottomY - 2, btnW, btnH, productUrl);
+    }
 
-    // Why text
-    const whyY = nameY + actualNameH + 6;
-    doc.fontSize(8.5).fillColor(GREY).font('Helvetica')
-      .text(piece.why || '', textX, whyY, { width: textW, lineGap: 1.5 });
-
-    // Price + brand — right column, vertically centred
-    doc.fontSize(16).fillColor(GREEN).font('Helvetica-Bold')
-      .text(piece.price || '', priceColX, pieceY + (CARD_H / 2) - 14, { width: priceColW, align: 'right', lineBreak: false, ...(productUrl ? { link: productUrl } : {}) });
-    doc.fontSize(8).fillColor(GREY).font('Helvetica')
-      .text(piece.brand || '', priceColX, pieceY + (CARD_H / 2) + 6, { width: priceColW, align: 'right', lineBreak: false });
-
-    pieceY += CARD_H + 4;
+    pieceY += CARD_H + 8;
   }
 
-  // COMPLETE YOUR LOOK — cards for any missing required categories
+  // ── COMPLETE YOUR LOOK ──
   const JACKET_OCCASIONS = ['date-night', 'job-interview', 'wedding-guest', 'night-out', 'smart-casual-work'];
   const jacketRequired = JACKET_OCCASIONS.includes(occasionData.occasion);
-
-  const pickedCategories = new Set(
-    (content.recommendedPieces || []).map(p => (p.category || '').toLowerCase())
-  );
-
-  // Normalise category names from picks to match check keys
+  const pickedCategories = new Set((content.recommendedPieces || []).map(p => (p.category || '').toLowerCase()));
   const hasTop     = [...pickedCategories].some(c => c === 'top');
   const hasBottoms = [...pickedCategories].some(c => c === 'bottoms');
   const hasShoes   = [...pickedCategories].some(c => c === 'shoes');
   const hasJacket  = [...pickedCategories].some(c => c.includes('jacket') || c === 'hoodie/jacket');
 
-  const completeYourLook = [];
-
-  // Log if mandatory categories missing — prompt should prevent this but log for debugging
   if (!hasTop)     console.warn(`[CYL] WARNING: No Top in recommendedPieces for session — Claude may have failed mandatory rule`);
   if (!hasBottoms) console.warn(`[CYL] WARNING: No Bottoms in recommendedPieces for session — Claude may have failed mandatory rule`);
+
+  const completeYourLook = [];
 
   if (!hasShoes) {
     completeYourLook.push({
       category: 'Shoes',
-      tip: content.whereToShop?.searchTerms?.find(t => /shoe|loafer|trainer|boot/i.test(t.search))?.search || null,
       guidance: `Search for shoes that match the occasion — for ${occasionData.occasionName}, look for ${
         ['date-night','wedding-guest','job-interview'].includes(occasionData.occasion)
           ? 'leather loafers, Oxford shoes or clean minimal leather trainers'
@@ -1000,7 +1243,6 @@ async function buildOccasionPDF(content, occasionData, products) {
   if (jacketRequired && !hasJacket) {
     completeYourLook.push({
       category: 'Jacket / Layer',
-      tip: null,
       guidance: `A jacket layer is the difference between looking nice and looking considered for ${occasionData.occasionName}. Look for ${
         ['job-interview','wedding-guest'].includes(occasionData.occasion)
           ? 'an unstructured blazer in navy or charcoal — single breasted, slim or regular fit'
@@ -1013,91 +1255,99 @@ async function buildOccasionPDF(content, occasionData, products) {
 
   if (completeYourLook.length > 0 && pieceY + 20 < PH - 100) {
     const cylY = pieceY + 12;
-    sectionLabel('COMPLETE YOUR LOOK', cylY, GREEN);
-    let cylCurY = cylY + 20;
-
+    sectionLabel('COMPLETE YOUR LOOK', cylY);
+    let cylCurY = cylY + 21;
     completeYourLook.forEach(item => {
       if (cylCurY + 72 > PH - 100) return;
-      const cardH = Math.max(72, textH(item.guidance, 9, 'Helvetica', IW - 28) + 36);
-      doc.rect(PAD, cylCurY, IW, cardH).fill(CARD2);
-      doc.rect(PAD, cylCurY, 2, cardH).fill(GREEN);
-      doc.fontSize(7).fillColor(GREEN).font('Helvetica-Bold')
-        .text(item.category.toUpperCase(), PAD + 14, cylCurY + 10, { characterSpacing: 2 });
-      doc.fontSize(9).fillColor(MUTED).font('Helvetica')
-        .text(item.guidance, PAD + 14, cylCurY + 24, { width: IW - 28, lineGap: 2 });
+      const cardH = Math.max(72, textH(item.guidance, 9, 'Sans', IW - 28) + 36);
+      doc.rect(PAD, cylCurY, IW, cardH).fill(OFFWHITE);
+      doc.rect(PAD, cylCurY, IW, cardH).strokeColor(BORDER).lineWidth(0.5).stroke();
+      doc.rect(PAD, cylCurY, 2, cardH).fill(ACCENT);
+      doc.fontSize(7).fillColor(ACCENT).font('Sans-Bold').text(item.category.toUpperCase(), PAD + 14, cylCurY + 10, { characterSpacing: 2 });
+      doc.fontSize(9).fillColor(INK_MID).font('Sans').text(item.guidance, PAD + 14, cylCurY + 24, { width: IW - 28, lineGap: 2 });
       cylCurY += cardH + 6;
     });
-
     pieceY = cylCurY;
   }
 
-  // WHERE TO SHOP YOURSELF
+  // Re-wear tip — new: shows this isn't a one-occasion piece, ties value
+  // forward to future guides
+  if (content.restyleTip && pieceY + 60 < PH - 100) {
+    const rwY = pieceY + 12;
+    sectionLabel('WEAR IT AGAIN', rwY);
+    const rwH = Math.max(textH(content.restyleTip, 9.5, 'Sans', IW - 28) + 28, 48);
+    lcard(PAD, rwY + 21, IW, rwH);
+    doc.fontSize(9.5).fillColor(INK_MID).font('Sans').text(content.restyleTip, PAD + 14, rwY + 33, { width: IW - 28, lineGap: 3 });
+    pieceY = rwY + 21 + rwH + 16;
+  }
+
+  // ── WHERE TO SHOP YOURSELF ──
   const ws = content.whereToShop;
   if (ws) {
-    // If not enough room on current page, start a new page
-    const wsNeeded = 80; // minimum space needed for section label + one item
+    const wsNeeded = 80;
     if (pieceY + wsNeeded >= PH - 60) {
-      footer();
-      doc.addPage();
-      bg();
-      pageHeader('If Our Picks Are Not Quite Right');
-      pieceY = 50;
+      footer(); doc.addPage(); bg(); pageHeader('If Our Picks Are Not Quite Right'); pieceY = 50;
     }
     const shopY = pieceY + 16;
-    if (shopY + 20 < PH - 60) {
-      sectionLabel('IF OUR PICKS ARE NOT QUITE RIGHT', shopY);
-    }
-    let wsY = shopY + 20;
-
+    if (shopY + 20 < PH - 60) sectionLabel('IF OUR PICKS ARE NOT QUITE RIGHT', shopY);
+    let wsY = shopY + 21;
     if (ws.intro && wsY < PH - 60) {
-      doc.fontSize(9.5).fillColor(MUTED).font('Helvetica').text(ws.intro, PAD, wsY, { width: IW, lineGap: 3 });
-      wsY += textH(ws.intro, 9.5, 'Helvetica', IW) + 14;
+      doc.fontSize(9.5).fillColor(INK_MID).font('Sans').text(ws.intro, PAD, wsY, { width: IW, lineGap: 3 });
+      wsY += textH(ws.intro, 9.5, 'Sans', IW) + 14;
     }
-
     (ws.searchTerms || []).forEach(term => {
       if (wsY + 52 > PH - 60) return;
-      doc.rect(PAD, wsY, IW, 48).fill(CARD2);
-      doc.rect(PAD, wsY, 2, 48).fill(GREEN);
-      doc.fontSize(8).fillColor(GREEN).font('Helvetica-Bold').text(term.site.toUpperCase(), PAD + 14, wsY + 8, { characterSpacing: 2 });
-      doc.fontSize(9).fillColor(WHITE).font('Helvetica-Bold').text(`"${term.search}"`, PAD + 14, wsY + 22, { width: (IW - 28) / 2, lineBreak: false });
-      doc.fontSize(7.5).fillColor(GREY).font('Helvetica').text(term.whatToLookFor || '', PAD + 14 + (IW - 28) / 2 + 8, wsY + 24, { width: (IW - 28) / 2 - 8 });
+      doc.rect(PAD, wsY, IW, 48).fill(OFFWHITE);
+      doc.rect(PAD, wsY, IW, 48).strokeColor(BORDER).lineWidth(0.5).stroke();
+      doc.rect(PAD, wsY, 2, 48).fill(ACCENT);
+      doc.fontSize(8).fillColor(ACCENT).font('Sans-Bold').text(term.site.toUpperCase(), PAD + 14, wsY + 8, { characterSpacing: 2 });
+      doc.fontSize(9).fillColor(INK).font('Serif-Bold').text(`"${term.search}"`, PAD + 14, wsY + 22, { width: (IW - 28) / 2, lineBreak: false });
+      doc.fontSize(7.5).fillColor(INK_LIGHT).font('Sans').text(term.whatToLookFor || '', PAD + 14 + (IW - 28) / 2 + 8, wsY + 24, { width: (IW - 28) / 2 - 8 });
       wsY += 54;
     });
-
     if (wsY + 48 < PH - 60) {
       const hw = (IW - 8) / 2;
-      doc.fontSize(8.5).font('Helvetica');
+      doc.fontSize(8.5).font('Sans');
       const brandsH = Math.max(48, doc.heightOfString(ws.brandsToConsider || '', { width: hw - 28 }) + 28);
       const priceH  = Math.max(48, doc.heightOfString(ws.priceGuidance  || '', { width: hw - 28 }) + 28);
       const infoCardH = Math.max(brandsH, priceH);
       if (wsY + infoCardH < PH - 60) {
-        doc.rect(PAD, wsY, hw, infoCardH).fill(CARD); doc.rect(PAD, wsY, 2, infoCardH).fill(GREEN);
-        doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold').text('BRANDS TO CONSIDER', PAD + 14, wsY + 8, { characterSpacing: 2 });
-        doc.fontSize(8.5).fillColor(MUTED).font('Helvetica').text(ws.brandsToConsider || '', PAD + 14, wsY + 22, { width: hw - 28 });
+        doc.rect(PAD, wsY, hw, infoCardH).fill(OFFWHITE);
+        doc.rect(PAD, wsY, hw, infoCardH).strokeColor(BORDER).lineWidth(0.5).stroke();
+        doc.rect(PAD, wsY, 2, infoCardH).fill(ACCENT);
+        doc.fontSize(6.5).fillColor(ACCENT).font('Sans-Bold').text('BRANDS TO CONSIDER', PAD + 14, wsY + 8, { characterSpacing: 2 });
+        doc.fontSize(8.5).fillColor(INK_MID).font('Sans').text(ws.brandsToConsider || '', PAD + 14, wsY + 22, { width: hw - 28 });
         const col2x = PAD + hw + 8;
-        doc.rect(col2x, wsY, hw, infoCardH).fill(CARD); doc.rect(col2x, wsY, 2, infoCardH).fill(GREEN);
-        doc.fontSize(6.5).fillColor(GREEN).font('Helvetica-Bold').text('PRICE GUIDANCE', col2x + 14, wsY + 8, { characterSpacing: 2 });
-        doc.fontSize(8.5).fillColor(MUTED).font('Helvetica').text(ws.priceGuidance || '', col2x + 14, wsY + 22, { width: hw - 28 });
+        doc.rect(col2x, wsY, hw, infoCardH).fill(OFFWHITE);
+        doc.rect(col2x, wsY, hw, infoCardH).strokeColor(BORDER).lineWidth(0.5).stroke();
+        doc.rect(col2x, wsY, 2, infoCardH).fill(ACCENT);
+        doc.fontSize(6.5).fillColor(ACCENT).font('Sans-Bold').text('PRICE GUIDANCE', col2x + 14, wsY + 8, { characterSpacing: 2 });
+        doc.fontSize(8.5).fillColor(INK_MID).font('Sans').text(ws.priceGuidance || '', col2x + 14, wsY + 22, { width: hw - 28 });
         wsY += infoCardH + 8;
       }
     }
-
     if (ws.avoid) {
-      doc.fontSize(7).font('Helvetica');
+      doc.fontSize(7).font('Sans');
       const avoidLabel = 'AVOID WHEN SHOPPING:  ';
-      const avoidFullText = avoidLabel + ws.avoid;
-      const avoidCardH = Math.max(36, doc.heightOfString(avoidFullText, { width: IW - 28 }) + 20);
-      if (wsY + avoidCardH < PH - 28) {
-        doc.rect(PAD, wsY, IW, avoidCardH).fill(CARD2);
+      const avoidCardH = Math.max(36, doc.heightOfString(avoidLabel + ws.avoid, { width: IW - 28 }) + 20);
+      if (wsY + avoidCardH < PH - 60) {
+        doc.rect(PAD, wsY, IW, avoidCardH).fill(OFFWHITE);
+        doc.rect(PAD, wsY, IW, avoidCardH).strokeColor(BORDER).lineWidth(0.5).stroke();
         doc.rect(PAD, wsY, 2, avoidCardH).fill(RED);
-        // Render label and avoid text separately to avoid cursor drift from characterSpacing
-        doc.fontSize(7).fillColor(RED).font('Helvetica-Bold')
-          .text('AVOID WHEN SHOPPING:', PAD + 14, wsY + 12);
-        // widthOfString must be called while font is still set to Helvetica-Bold
+        doc.fontSize(7).fillColor(RED).font('Sans-Bold').text('AVOID WHEN SHOPPING:', PAD + 14, wsY + 12);
         const avoidLabelW = doc.widthOfString('AVOID WHEN SHOPPING:');
-        doc.fontSize(7).fillColor(MUTED).font('Helvetica')
-          .text(' ' + ws.avoid, PAD + 14 + avoidLabelW, wsY + 12, { width: IW - 28 - avoidLabelW, lineBreak: true });
+        doc.fontSize(7).fillColor(INK_MID).font('Sans').text(' ' + ws.avoid, PAD + 14 + avoidLabelW, wsY + 12, { width: IW - 28 - avoidLabelW, lineBreak: true });
+        wsY += avoidCardH + 20;
       }
+    }
+
+    // Personal sign-off — new: closing line signed by a named stylist,
+    // the single biggest lever for "a human sent this" beyond word choice
+    if (wsY + 30 < PH - 60) {
+      doc.fontSize(10).fillColor(INK).font('Serif-Italic')
+        .text(`That's your look sorted — have a good one.`, PAD, wsY, { width: IW });
+      doc.fontSize(10).fillColor(ACCENT).font('Serif-Bold')
+        .text(`— ${STYLIST_NAME}, your Outfitify stylist`, PAD, wsY + 18, { width: IW });
     }
   }
 
@@ -1110,13 +1360,44 @@ async function buildOccasionPDF(content, occasionData, products) {
   });
 }
 
+
 // ── SEND OCCASION EMAIL ───────────────────────────────────────────────────────
 
-async function sendOccasionEmail(toEmail, downloadUrl, occasionName, sessionId) {
+async function sendOccasionEmail(toEmail, downloadUrl, occasionName, sessionId, isFree = false) {
+  const subject = isFree
+    ? `Your Free ${occasionName} Style Guide is Ready`
+    : `Your ${occasionName} Style Guide is Ready`;
+
+  const introBody = isFree
+    ? `Your first guide's on us. It's been built around your answers — what to wear, how it should fit your build, what to avoid, hand-picked products with links and prices, and where to shop if you want to find your own.`
+    : `Your personalised outfit guide has been built around your answers — what to wear, how it should fit your build, what to avoid, hand-picked products with links and prices, and where to shop if you want to find your own.`;
+
+  const upsellCard = isFree
+    ? `
+      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 24px 0;border:1px solid #2A2520;border-left:3px solid #B8A898;">
+        <tr>
+          <td style="background-color:#111111;padding:24px;">
+            <p style="color:#B8A898;font-size:10px;letter-spacing:3px;font-weight:600;margin:0 0 10px 0;text-transform:uppercase;font-family:Arial,sans-serif;">Got another occasion coming up?</p>
+            <p style="color:#C8BFB5;font-size:13px;line-height:1.7;margin:0 0 16px 0;font-family:Arial,sans-serif;">That one was free — the next one's £2.49, or go unlimited for £9.99 (one-time payment, every future guide included, no subscription).</p>
+            <a href="https://occasions.outfitify.co.uk" style="display:block;background-color:#B8A898;color:#0A0A0A;text-align:center;padding:14px;font-size:11px;font-weight:600;letter-spacing:3px;text-decoration:none;text-transform:uppercase;font-family:Arial,sans-serif;">BROWSE ALL OCCASIONS →</a>
+          </td>
+        </tr>
+      </table>`
+    : `
+      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 24px 0;border:1px solid #2A2520;border-left:3px solid #B8A898;">
+        <tr>
+          <td style="background-color:#111111;padding:24px;">
+            <p style="color:#B8A898;font-size:10px;letter-spacing:3px;font-weight:600;margin:0 0 10px 0;text-transform:uppercase;font-family:Arial,sans-serif;">Need a few more occasions this year?</p>
+            <p style="color:#C8BFB5;font-size:13px;line-height:1.7;margin:0 0 16px 0;font-family:Arial,sans-serif;">Go unlimited for £9.99 — one-time payment, every future guide included, never pay per guide again.</p>
+            <a href="https://occasions.outfitify.co.uk" style="display:block;background-color:#B8A898;color:#0A0A0A;text-align:center;padding:14px;font-size:11px;font-weight:600;letter-spacing:3px;text-decoration:none;text-transform:uppercase;font-family:Arial,sans-serif;">GO UNLIMITED →</a>
+          </td>
+        </tr>
+      </table>`;
+
   const emailBody = {
     from: { address: 'outfitify@outfitify.co.uk', name: 'Outfitify' },
     to: [{ email_address: { address: toEmail } }],
-    subject: `Your ${occasionName} Style Guide is Ready`,
+    subject,
     htmlbody: `<!DOCTYPE html>
 <html lang="en" xmlns="http://www.w3.org/1999/xhtml">
 <head>
@@ -1138,7 +1419,6 @@ async function sendOccasionEmail(toEmail, downloadUrl, occasionName, sessionId) 
 <tr><td align="center" style="background-color:#0A0A0A;padding:0;">
 <table class="email-wrap" width="600" cellpadding="0" cellspacing="0" border="0" style="max-width:600px;width:100%;background-color:#0A0A0A;border:1px solid #2A2520;font-family:Arial,sans-serif;">
 
-  <!-- HEADER -->
   <tr>
     <td style="background-color:#111111;padding:28px 40px;border-bottom:1px solid #2A2520;text-align:center;">
       <p style="color:#7A6E66;font-size:10px;letter-spacing:4px;margin:0 0 4px 0;text-transform:uppercase;font-family:Arial,sans-serif;">Occasion Style Guide</p>
@@ -1146,13 +1426,11 @@ async function sendOccasionEmail(toEmail, downloadUrl, occasionName, sessionId) 
     </td>
   </tr>
 
-  <!-- BODY -->
   <tr>
     <td style="background-color:#0A0A0A;padding:44px 40px;">
       <h2 style="color:#F2EDE6;font-size:26px;font-weight:300;margin:0 0 12px 0;line-height:1.2;font-family:Arial,sans-serif;">Your ${occasionName} guide is ready.</h2>
-      <p style="color:#7A6E66;font-size:14px;line-height:1.7;margin:0 0 32px 0;font-family:Arial,sans-serif;">Your personalised outfit guide has been built around your answers — what to wear, how it should fit your build, what to avoid, hand-picked products with links and prices, and where to shop if you want to find your own.</p>
+      <p style="color:#7A6E66;font-size:14px;line-height:1.7;margin:0 0 32px 0;font-family:Arial,sans-serif;">${introBody}</p>
       
-      <!-- CTA BUTTON -->
       <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 32px 0;">
         <tr>
           <td style="background-color:#F2EDE6;text-align:center;padding:0;">
@@ -1161,22 +1439,12 @@ async function sendOccasionEmail(toEmail, downloadUrl, occasionName, sessionId) 
         </tr>
       </table>
 
-      <!-- UPSELL CARD -->
-      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 24px 0;border:1px solid #2A2520;border-left:3px solid #B8A898;">
-        <tr>
-          <td style="background-color:#111111;padding:24px;">
-            <p style="color:#B8A898;font-size:10px;letter-spacing:3px;font-weight:600;margin:0 0 10px 0;text-transform:uppercase;font-family:Arial,sans-serif;">Got another occasion coming up?</p>
-            <p style="color:#C8BFB5;font-size:13px;line-height:1.7;margin:0 0 16px 0;font-family:Arial,sans-serif;">Date night, wedding, job interview, festival — each one has its own dedicated guide. £2.49 each, or bundle 2 for £3.99 or 3 for £4.99.</p>
-            <a href="https://occasions.outfitify.co.uk" style="display:block;background-color:#B8A898;color:#0A0A0A;text-align:center;padding:14px;font-size:11px;font-weight:600;letter-spacing:3px;text-decoration:none;text-transform:uppercase;font-family:Arial,sans-serif;">BROWSE ALL OCCASIONS →</a>
-          </td>
-        </tr>
-      </table>
+      ${upsellCard}
 
       <p style="color:#4A4440;font-size:12px;text-align:center;border-top:1px solid #2A2520;padding-top:20px;margin:0;font-family:Arial,sans-serif;">This link is unique to you. If you have any issues, reply to this email.</p>
     </td>
   </tr>
 
-  <!-- FOOTER -->
   <tr>
     <td style="background-color:#111111;border-top:1px solid #2A2520;padding:16px 40px;text-align:center;">
       <p style="color:#4A4440;font-size:10px;letter-spacing:2px;margin:0;font-family:Arial,sans-serif;">OUTFITIFY · MAKING STYLE EFFORTLESS · OUTFITIFY.CO.UK</p>
@@ -1229,7 +1497,6 @@ async function sendBundleEmail(toEmail, guides, sessionId) {
 <tr><td align="center" style="background-color:#0A0A0A;padding:0;">
 <table class="email-wrap" width="600" cellpadding="0" cellspacing="0" border="0" style="max-width:600px;width:100%;background-color:#0A0A0A;border:1px solid #2A2520;font-family:Arial,sans-serif;">
 
-  <!-- HEADER -->
   <tr>
     <td style="background-color:#111111;padding:28px 40px;border-bottom:1px solid #2A2520;text-align:center;">
       <p style="color:#7A6E66;font-size:10px;letter-spacing:4px;margin:0 0 4px 0;text-transform:uppercase;font-family:Arial,sans-serif;">Occasion Style Guides</p>
@@ -1237,14 +1504,12 @@ async function sendBundleEmail(toEmail, guides, sessionId) {
     </td>
   </tr>
 
-  <!-- BODY -->
   <tr>
     <td style="background-color:#0A0A0A;padding:44px 40px;">
       <h2 style="color:#F2EDE6;font-size:26px;font-weight:300;margin:0 0 12px 0;line-height:1.2;font-family:Arial,sans-serif;">Your ${guides.length} guides are ready.</h2>
       <p style="color:#7A6E66;font-size:14px;line-height:1.7;margin:0 0 32px 0;font-family:Arial,sans-serif;">All ${guides.length} of your personalised occasion style guides have been built. Download each one below.</p>
       ${guideButtons}
 
-      <!-- UPSELL CARD -->
       <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:24px 0;border:1px solid #2A2520;border-left:3px solid #B8A898;">
         <tr>
           <td style="background-color:#111111;padding:24px;">
@@ -1259,7 +1524,6 @@ async function sendBundleEmail(toEmail, guides, sessionId) {
     </td>
   </tr>
 
-  <!-- FOOTER -->
   <tr>
     <td style="background-color:#111111;border-top:1px solid #2A2520;padding:16px 40px;text-align:center;">
       <p style="color:#4A4440;font-size:10px;letter-spacing:2px;margin:0;font-family:Arial,sans-serif;">OUTFITIFY · MAKING STYLE EFFORTLESS · OUTFITIFY.CO.UK</p>
@@ -1765,7 +2029,6 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
     });
   }
 
-  // PAID TIERS
   function truncateToFit(str, maxWidth, fontSize, fontName, maxLines) {
     if (!str) return '';
     doc.fontSize(fontSize).font(fontName || 'Helvetica');
