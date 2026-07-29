@@ -1223,13 +1223,19 @@ async function buildOccasionPDF(content, occasionData, products) {
     // or breaks the card layout, regardless of source image aspect ratio
     if (hasImage) {
       const imgX = PAD + 14, imgY = pieceY + 14;
+      doc.save();
       try {
-        doc.save();
         doc.rect(imgX, imgY, IMG_SIZE, IMG_SIZE).clip();
         doc.image(imageBuffers[i], imgX, imgY, { width: IMG_SIZE, height: IMG_SIZE, cover: [IMG_SIZE, IMG_SIZE] });
-        doc.restore();
       } catch {
         doc.rect(imgX, imgY, IMG_SIZE, IMG_SIZE).fill(BORDER);
+      } finally {
+        // CRITICAL: must always run, even on failure — if doc.save() ran but
+        // restore() never does, every clip stays active for the rest of the
+        // page and silently makes all subsequent text invisible, even though
+        // it's still technically written into the PDF (which is why text
+        // extraction tools could read it fine while the actual page looked empty)
+        doc.restore();
       }
     }
 
@@ -2225,8 +2231,10 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
     doc.rect(PAD, pieceY, IW, CARD_H).strokeColor(BORDER).lineWidth(0.5).stroke();
     const imgY = pieceY + (CARD_H - IMG_W) / 2;
     if (imageBuffers[i]) {
-      try { doc.save(); doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).clip(); doc.image(imageBuffers[i], PAD + IMG_PAD, imgY, { width: IMG_W, height: IMG_W, cover: [IMG_W, IMG_W] }); doc.restore(); }
+      doc.save();
+      try { doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).clip(); doc.image(imageBuffers[i], PAD + IMG_PAD, imgY, { width: IMG_W, height: IMG_W, cover: [IMG_W, IMG_W] }); }
       catch { doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).fill(CARD2); }
+      finally { doc.restore(); }
     } else { doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).fill(CARD2); }
     let productUrl = piece.url || null;
     if (!productUrl) { for (const catItems of Object.values(products)) { const match = catItems.find(p => p['Item Name'] === piece.name); if (match?.['Product URL']) { productUrl = match['Product URL']; break; } } }
