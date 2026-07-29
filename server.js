@@ -690,6 +690,40 @@ function getCurrentSeason() {
   return 'Winter';
 }
 
+// Catches a real, recurring content-accuracy bug: the AI describing a product
+// in occasionTitle/whatToWear (e.g. "chunky trainers and an ecru bucket hat")
+// that was never actually included in recommendedPieces — leaving the
+// customer reading about an item they have no way to buy from the guide.
+// Reordering the JSON schema (recommendedPieces before whatToWear) reduced
+// this but did not eliminate it, so this checks the actual output rather
+// than just instructing the model not to do it.
+const CATEGORY_KEYWORDS = {
+  shoes: ['trainer', 'trainers', 'shoe', 'shoes', 'boot', 'boots', 'loafer', 'loafers', 'sandal', 'sandals', 'sneaker', 'sneakers', 'slider', 'sliders', 'wellies', 'flip flop', 'flip-flop'],
+  jacket: ['jacket', 'blazer', 'harrington', 'bomber', 'coat', 'overshirt', 'cardigan'],
+  accessory: ['hat', 'cap', 'bucket hat', 'sunglasses', 'shades', 'sunnies', 'watch', 'belt', 'necklace', 'bracelet', 'bag', 'scarf', 'tie'],
+};
+
+function findCategoryMismatches(parsed) {
+  const pickedCategories = new Set((parsed.recommendedPieces || []).map(p => (p.category || '').toLowerCase()));
+  const hasCategory = (key) => {
+    if (key === 'jacket') return [...pickedCategories].some(c => c.includes('jacket') || c === 'hoodie/jacket');
+    return [...pickedCategories].some(c => c === key);
+  };
+  const textToCheck = [
+    parsed.occasionTitle,
+    parsed.whatToWear?.headline,
+    parsed.whatToWear?.outfitFormula,
+  ].filter(Boolean).join(' ').toLowerCase();
+
+  const violations = [];
+  for (const [category, keywords] of Object.entries(CATEGORY_KEYWORDS)) {
+    if (hasCategory(category)) continue; // genuinely picked — fine to mention
+    const hit = keywords.find(kw => new RegExp(`\\b${kw.replace(/[- ]/g, '[- ]?')}\\b`, 'i').test(textToCheck));
+    if (hit) violations.push(`${category} (matched "${hit}")`);
+  }
+  return violations;
+}
+
 async function generateOccasionContent(occasionData, products) {
   const productList = [];
   for (const [cat, items] of Object.entries(products)) {
@@ -991,18 +1025,32 @@ Rules:
 
   let parsed = null;
   let lastError = null;
+  let lastViolations = [];
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
+      const attemptPrompt = lastViolations.length
+        ? `${prompt}\n\nCORRECTION FROM PREVIOUS ATTEMPT — you described item(s) in occasionTitle, whatToWear.headline or whatToWear.outfitFormula that do NOT appear in recommendedPieces: ${lastViolations.join(', ')}. Only mention a product category in that copy if that exact category is one of your recommendedPieces. Remove those references and rewrite accordingly.`
+        : prompt;
       const message = await anthropic.messages.create({
         model: 'claude-sonnet-4-5',
         max_tokens: 3000,
-        messages: [{ role: 'user', content: prompt }],
+        messages: [{ role: 'user', content: attemptPrompt }],
       });
       const raw = message.content[0].text.trim();
       const text = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
-      parsed = JSON.parse(text);
-      console.log(`=== OCCASION CONTENT attempt ${attempt} ===\n${JSON.stringify(parsed, null, 2)}\n=== END ===`);
-      break;
+      const candidate = JSON.parse(text);
+      console.log(`=== OCCASION CONTENT attempt ${attempt} ===\n${JSON.stringify(candidate, null, 2)}\n=== END ===`);
+
+      const violations = findCategoryMismatches(candidate);
+      parsed = candidate; // keep as the best-available fallback even if this attempt still has violations
+      if (violations.length > 0) {
+        console.warn(`[content-mismatch] attempt ${attempt} describes unpicked categories: ${violations.join(', ')}`);
+        lastViolations = violations;
+        if (attempt < 3) { console.log('Retrying due to category mismatch...'); continue; }
+      } else {
+        lastViolations = [];
+        break;
+      }
     } catch (err) {
       lastError = err;
       console.error(`Claude parse failed attempt ${attempt}:`, err.message);
@@ -1010,6 +1058,9 @@ Rules:
     }
   }
   if (!parsed) throw new Error(`Claude failed after 3 attempts: ${lastError?.message}`);
+  if (lastViolations.length > 0) {
+    console.warn(`[content-mismatch] Delivering guide despite unresolved mismatch after 3 attempts: ${lastViolations.join(', ')}`);
+  }
   return parsed;
 }
 
