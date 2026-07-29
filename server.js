@@ -349,6 +349,7 @@ app.post('/api/create-occasion-checkout', async (req, res) => {
     const checkoutSession = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       customer_creation: 'always',
+      customer_email: email, // locks the checkout email to the quiz email so it can't drift from what freeUsed/unlimitedPaid is keyed on
       allow_promotion_codes: true,
       line_items: [{
         price_data: {
@@ -422,6 +423,7 @@ app.post('/api/create-unlimited-checkout', async (req, res) => {
     const checkoutSession = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       customer_creation: 'always',
+      customer_email: email, // locks the checkout email to the quiz email so it can't drift from what freeUsed/unlimitedPaid is keyed on
       allow_promotion_codes: true,
       line_items: [{
         price_data: {
@@ -518,7 +520,12 @@ app.post('/webhook', async (req, res) => {
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
     const sessionId = session.metadata.sessionId;
-    const userEmail = session.customer_email || session.customer_details?.email || session.metadata.email || null;
+    // IMPORTANT: metadata.email (the email entered in the quiz) is the source
+    // of truth for the app's free/paid/unlimited logic — it must win over
+    // whatever the customer typed into the Stripe Checkout email field, or a
+    // customer who uses a different email at checkout than in the quiz gets
+    // their unlimited/free status recorded against the wrong account entirely
+    const userEmail = session.metadata.email || session.customer_details?.email || session.customer_email || null;
     const tier = session.metadata.tier || 'occasion';
 
     console.log(`Webhook: tier=${tier} session=${sessionId} email=${userEmail}`);
