@@ -1271,7 +1271,17 @@ async function buildOccasionPDF(content, occasionData, products) {
     const contentHgt = 14 + 12 + 6 + nameH + 6 + whyH;
     const CARD_H = Math.max(hasImage ? IMG_SIZE + 28 : 64, contentHgt + priceRowH + 20);
 
-    if (pieceY + CARD_H > PH - 100) break;
+    // If a card doesn't fit, move to a new page rather than dropping it —
+    // a dropped card here means a genuinely picked, correctly-described
+    // product (the customer reads about it in the styling copy) silently
+    // never appears with a price or a "Shop this" link at all
+    if (pieceY + CARD_H > PH - 100) {
+      footer();
+      doc.addPage();
+      bg();
+      pageHeader('Your Picks (continued)');
+      pieceY = 80;
+    }
 
     doc.rect(PAD, pieceY, IW, CARD_H).fill(OFFWHITE);
     doc.rect(PAD, pieceY, IW, CARD_H).strokeColor(BORDER).lineWidth(0.5).stroke();
