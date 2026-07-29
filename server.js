@@ -1285,6 +1285,33 @@ async function buildOccasionPDF(content, occasionData, products) {
 
   const completeYourLook = [];
 
+  // Top and Bottoms are supposed to be mandatory picks (enforced in the AI
+  // prompt), but the product sheet can still be too thin in a given
+  // occasion/fit/budget/season combination for Claude to have anything to
+  // pick from. When that happens the styling copy still references a top
+  // or bottoms item in prose with nowhere for the customer to buy it —
+  // this fallback ensures they always get somewhere to go instead of a
+  // dead end.
+  if (!hasTop) {
+    completeYourLook.push({
+      category: 'Top',
+      guidance: `Search for a top to match the outfit above — for ${occasionData.occasionName}, look for ${
+        ['date-night', 'wedding-guest', 'job-interview', 'night-out', 'smart-casual-work'].includes(occasionData.occasion)
+          ? 'a fitted shirt or smart short-sleeve top in a clean, plain colour — nothing oversized, logo-heavy or gym-branded'
+          : ['festival', 'summer-holiday'].includes(occasionData.occasion)
+          ? 'a lightweight t-shirt or short-sleeve shirt in a breathable fabric'
+          : 'a top that suits the formality of the occasion'
+      }. Make sure the fit matches your build rather than defaulting to whatever size you usually buy.`,
+    });
+  }
+
+  if (!hasBottoms) {
+    completeYourLook.push({
+      category: 'Bottoms',
+      guidance: `Search for bottoms to match the outfit above — for ${occasionData.occasionName}, look for smart trousers, chinos or dark jeans at the right formality level, in a fit that works for your build without pulling or gaping.`,
+    });
+  }
+
   if (!hasShoes) {
     completeYourLook.push({
       category: 'Shoes',
