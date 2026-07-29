@@ -390,8 +390,31 @@ app.post('/api/create-unlimited-checkout', async (req, res) => {
   if (!occasion || !email) return res.status(400).json({ error: 'Missing required fields' });
 
   const gender = genderFromOccasion(occasion);
+  const occasionData = { occasion, occasionName, budget, fit, occasionDetail, occasionDetail2, style, email, gender };
+  const user = getUserRecord(email);
+
+  // ── Already on unlimited — never charge again, generate directly ──
+  if (user.unlimitedPaid) {
+    if (user.guideCount >= UNLIMITED_GUIDE_CAP) {
+      console.warn(`[V3] ${email} hit the unlimited guide cap (${UNLIMITED_GUIDE_CAP}) via unlimited-checkout route`);
+      return res.status(403).json({
+        error: 'guide_cap_reached',
+        message: "You've reached the fair use limit on your unlimited pass. Drop us a line at hello@outfitify.co.uk and we'll sort you out.",
+      });
+    }
+
+    const sessionId = crypto.randomBytes(16).toString('hex');
+    saveFreeSession(`occ_${sessionId}`, { ...occasionData, createdAt: Date.now() });
+    res.json({ free: true, sessionId, alreadyUnlimited: true });
+
+    generateOccasionReport(sessionId, occasionData, email, { isFree: false })
+      .then(() => incrementGuideCount(email))
+      .catch(err => console.error(`Unlimited-repeat report failed ${sessionId}:`, err));
+    return;
+  }
+
   const sessionId = crypto.randomBytes(16).toString('hex');
-  saveFreeSession(`occ_${sessionId}`, { occasion, occasionName, budget, fit, occasionDetail, occasionDetail2, style, email, gender, createdAt: Date.now() });
+  saveFreeSession(`occ_${sessionId}`, { ...occasionData, createdAt: Date.now() });
 
   console.log(`Unlimited checkout: ${occasion}, session ${sessionId}`);
 
