@@ -909,17 +909,6 @@ Respond with JSON only, no markdown:
 {
   "occasionTitle": "Short punchy title e.g. Your Date Night Look",
   "openingNote": "2-3 sentences written like a personal note — acknowledge their specific occasion detail, what the goal is, what you are giving them. Warm and direct.",
-  "whatToWear": {
-    "headline": "One punchy sentence summarising the outfit direction including the layer",
-    "outfitFormula": "3-4 sentences describing the complete outfit top to bottom — specific colours, specific fits, how pieces work together, and why it works for their build. Only describe pieces you are also recommending in picks. No jargon.",
-    "fitAdvice": "2 sentences of specific fit advice for their build — what to look for when trying things on and what to avoid. Name specific fit issues relevant to their build."
-  },
-  "whatToAvoid": "MANDATORY — 2-3 specific things to avoid for this occasion and build. Written like a friend telling them honestly. Name specific items or fits, not just categories. This field must never be empty.",
-  "stylistTip": "One insider tip most people do not know — specific to this occasion and this build. Should feel like a genuine secret, not generic advice.",
-  "quickRecap": [
-    "3-4 short checklist items, each under 8 words, covering the essentials to double-check before leaving — e.g. 'Jacket on, sleeves pushed up', 'Boots not trainers', 'One less thing than you think'. Specific to this outfit, not generic."
-  ],
-  "restyleTip": "One sentence on how to re-wear the key piece from this outfit for a DIFFERENT occasion in future — e.g. 'That harrington works just as well for a casual daytime look, just swap the boots for trainers.' Must reference an actual piece from recommendedPieces and a genuinely different occasion type.",
   "recommendedPieces": [
     {
       "category": "category name",
@@ -930,6 +919,17 @@ Respond with JSON only, no markdown:
       "why": "One sentence — must mention their specific build and why this exact product works for it. Include colour or fit detail."
     }
   ],
+  "whatToWear": {
+    "headline": "One punchy sentence summarising the outfit direction — must reference the ACTUAL items you picked in recommendedPieces above, by their real colour/type, not a generic or imagined item",
+    "outfitFormula": "3-4 sentences describing the complete outfit top to bottom, using ONLY the exact items listed in recommendedPieces above — do not mention any product, colour, or layer that is not one of those picks. If recommendedPieces has no jacket/layer item, do not describe wearing a jacket or shirt layer at all.",
+    "fitAdvice": "2 sentences of specific fit advice for their build — what to look for when trying things on and what to avoid. Name specific fit issues relevant to their build."
+  },
+  "whatToAvoid": "MANDATORY — 2-3 specific things to avoid for this occasion and build. Written like a friend telling them honestly. Name specific items or fits, not just categories. This field must never be empty.",
+  "stylistTip": "One insider tip most people do not know — specific to this occasion and this build. Should feel like a genuine secret, not generic advice.",
+  "quickRecap": [
+    "3-4 short checklist items, each under 8 words, covering the essentials to double-check before leaving — e.g. 'Jacket on, sleeves pushed up', 'Boots not trainers', 'One less thing than you think'. Specific to this outfit, not generic."
+  ],
+  "restyleTip": "One sentence on how to re-wear the key piece from this outfit for a DIFFERENT occasion in future — e.g. 'That harrington works just as well for a casual daytime look, just swap the boots for trainers.' Must reference an actual piece from recommendedPieces and a genuinely different occasion type.",
   "whereToShop": {
     "intro": "One sentence — if our picks are not quite right here is exactly what to look for",
     "searchTerms": [
@@ -945,6 +945,7 @@ Respond with JSON only, no markdown:
 
 Rules:
 - JSON only, no markdown
+- CRITICAL: decide recommendedPieces FIRST, then write whatToWear to describe exactly those items — never the reverse. The outfitFormula and headline must not mention any garment, colour, or layer that isn't an actual entry in recommendedPieces
 - whatToAvoid is MANDATORY — never return an empty string. Always include 2-3 specific things to avoid for this occasion and build
 - Top and Bottoms are MANDATORY — always include at least one Top and one Bottoms pick. If you cannot find a suitable product in either category the guide fails. These two are non-negotiable
 - Accessory — you may include ONE accessory pick (5th and final item) if a genuinely suitable product exists in the list AND it's the kind of finishing touch a real stylist would actually add — a watch, belt, bag, sunglasses, jewellery. Only include it if it's a real fit for the occasion and build, never just to fill the slot. If nothing suitable exists, omit it — 4 strong picks beats 5 where the 5th feels forced
