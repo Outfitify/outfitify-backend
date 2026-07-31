@@ -1474,7 +1474,14 @@ async function buildOccasionPDF(content, occasionData, products) {
   }
 
   // ── COMPLETE YOUR LOOK ──
-  const JACKET_OCCASIONS = ['date-night', 'job-interview', 'wedding-guest', 'night-out', 'smart-casual-work'];
+  // Mens jacket-required occasions, plus w-job-interview — its own rules
+  // explicitly name blazers as a core expected piece across every body
+  // shape, the same way mens interview/date-night do. Other womens
+  // occasions (e.g. w-wedding-guest) are dress-driven rather than
+  // blazer-driven, so they're deliberately NOT included here — this
+  // fallback would wrongly nudge someone who correctly got a dress
+  // toward "go find a jacket" when they don't need one.
+  const JACKET_OCCASIONS = ['date-night', 'job-interview', 'wedding-guest', 'night-out', 'smart-casual-work', 'w-job-interview'];
   const jacketRequired = JACKET_OCCASIONS.includes(occasionData.occasion);
   const pickedCategories = new Set((content.recommendedPieces || []).map(p => (p.category || '').toLowerCase()));
   const hasTop     = [...pickedCategories].some(c => c === 'top');
@@ -1524,21 +1531,32 @@ async function buildOccasionPDF(content, occasionData, products) {
           ? 'Chelsea boots, clean leather trainers or smart loafers'
           : ['festival','summer-holiday'].includes(occasionData.occasion)
           ? 'canvas shoes, clean trainers or sandals'
+          : ['w-date-night','w-wedding-guest','w-job-interview'].includes(occasionData.occasion)
+          ? 'heels, block heels or smart flats depending on comfort and how much you\'re on your feet'
+          : ['w-girls-night-out'].includes(occasionData.occasion)
+          ? 'heels or strappy sandals suited to the venue'
+          : ['w-brunch'].includes(occasionData.occasion)
+          ? 'casual trainers, loafers or flat sandals'
+          : ['w-summer-holiday','w-festival'].includes(occasionData.occasion)
+          ? 'sandals, espadrilles or festival boots depending on the setting'
           : 'clean smart shoes suited to the occasion'
       }. Avoid anything overly casual or worn-looking.`,
     });
   }
 
   if (jacketRequired && !hasJacket) {
+    const isWomensJacketOccasion = occasionData.occasion === 'w-job-interview';
     completeYourLook.push({
       category: 'Jacket / Layer',
       guidance: `A jacket layer is the difference between looking nice and looking considered for ${occasionData.occasionName}. Look for ${
-        ['job-interview','wedding-guest'].includes(occasionData.occasion)
+        isWomensJacketOccasion
+          ? 'a structured blazer in navy, charcoal or black — single breasted, tailored or slightly relaxed fit depending on your shape'
+          : ['job-interview','wedding-guest'].includes(occasionData.occasion)
           ? 'an unstructured blazer in navy or charcoal — single breasted, slim or regular fit'
           : ['date-night','night-out'].includes(occasionData.occasion)
           ? 'a harrington jacket, bomber or unstructured blazer worn open over the shirt'
           : 'a smart casual jacket or overshirt that sits over your top without adding bulk'
-      }. Brands to check: ASOS Design, Jack & Jones Premium, River Island.`,
+      }. Brands to check: ${isWomensJacketOccasion ? 'ASOS Design, & Other Stories, Mango' : 'ASOS Design, Jack & Jones Premium, River Island'}.`,
     });
   }
 
