@@ -231,6 +231,13 @@ async function fetchOccasionProducts(occasion, budget, fit, gender = 'mens') {
   const BUDGET_ORDER = ['Budget', 'Mid', 'Premium'];
   function budgetCascade(pool, tier) {
     const idx = BUDGET_ORDER.indexOf(tier);
+    // Only a genuinely higher tier than what the customer selected counts as
+    // "over budget" — a cascade pulling in a cheaper adjacent tier is not
+    const tagOverBudget = (arr) => arr.map(p => {
+      const pIdx = BUDGET_ORDER.indexOf((p['Budget'] || '').trim());
+      return pIdx > idx ? { ...p, _overBudget: true } : p;
+    });
+
     let result = pool.filter(p => (p['Budget'] || '').trim() === tier);
     if (result.length >= 2) return result;
     const adjacent = [BUDGET_ORDER[idx - 1], BUDGET_ORDER[idx + 1]].filter(Boolean);
@@ -238,8 +245,8 @@ async function fetchOccasionProducts(occasion, budget, fit, gender = 'mens') {
       const pb = (p['Budget'] || '').trim();
       return pb === tier || adjacent.includes(pb);
     });
-    if (result.length >= 2) return result;
-    return pool;
+    if (result.length >= 2) return tagOverBudget(result);
+    return tagOverBudget(pool);
   }
 
   const CATEGORIES = gender === 'womens'
@@ -753,6 +760,7 @@ async function generateOccasionContent(occasionData, products) {
       brand:    p['Brand'],
       price:    `£${p['Price']}`,
       url:      p['Product URL'],
+      ...(p._overBudget ? { note: 'ABOVE the customer\'s selected budget tier — only option available in this category, must be acknowledged honestly if picked' } : {}),
     }));
   }
 
@@ -968,6 +976,11 @@ WHY TEXT RULES — CRITICAL:
 - Example bad why: "A great choice for date night that shows you made an effort"
 - Include specific colour, fit detail, or fabric detail in every why
 
+OVER-BUDGET CHECK — CRITICAL:
+- Some products in the list are marked with a "note" field saying they are above the customer's selected budget tier — this happens when nothing suitable existed at their actual budget for that category
+- If you pick one of these products, you MUST honestly acknowledge the price gap in that item's "why" field — e.g. "This runs above your usual budget, but nothing at your price point matched the occasion properly — it's worth the stretch for a wedding" — never write a why for an over-budget pick as if the price were normal
+- Prefer a product within the customer's actual budget whenever one exists; only reach for a flagged over-budget item when it's genuinely the best or only suitable option in that category
+
 OUTFIT FORMULA RULES — CRITICAL:
 - Must include specific colours not just categories — say "dark navy slim chinos" not just "chinos"
 - Must include how pieces work together — say "the dark bottom half keeps the eye up toward the face" not just "wear chinos with a shirt"
@@ -1159,23 +1172,42 @@ async function buildOccasionPDF(content, occasionData, products) {
   // to always claim they came from Zara (Referer: 'https://www.zara.com/'),
   // which silently broke images from every other retailer in your sheet.
   // This derives the referer from each image's own domain instead.
+  //
+  // Some retailers (e.g. ASOS) serve images from a separate CDN domain
+  // (images.asos-media.com) rather than their main site — sending that CDN
+  // domain back as its own Referer doesn't match how a real browser would
+  // load it (which would show the actual product page's domain), and can
+  // trigger the CDN's own anti-hotlink blocking. If the domain-matched
+  // Referer attempt fails, retry once with no Referer at all — many CDNs
+  // allow a missing Referer (treated as direct navigation) even when they
+  // reject a mismatched one.
   async function fetchProductImage(imageUrl) {
     if (!imageUrl) return null;
+    const domain = new URL(imageUrl).hostname;
+    const baseHeaders = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+    };
     try {
-      const domain = new URL(imageUrl).hostname;
       const r = await axios.get(imageUrl, {
         responseType: 'arraybuffer',
         timeout: 5000,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Referer': `https://${domain}/`,
-          'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
-        },
+        headers: { ...baseHeaders, 'Referer': `https://${domain}/` },
       });
       return Buffer.from(r.data);
     } catch (err) {
-      console.warn(`[image fetch] failed for ${imageUrl}: ${err.message}`);
-      return null; // falls back to a plain placeholder box — never breaks layout
+      console.warn(`[image fetch] domain-referer attempt failed for ${imageUrl}: ${err.message} — retrying with no Referer`);
+      try {
+        const r2 = await axios.get(imageUrl, {
+          responseType: 'arraybuffer',
+          timeout: 5000,
+          headers: baseHeaders, // no Referer at all
+        });
+        return Buffer.from(r2.data);
+      } catch (err2) {
+        console.warn(`[image fetch] no-referer retry also failed for ${imageUrl}: ${err2.message}`);
+        return null; // falls back to a plain placeholder box — never breaks layout
+      }
     }
   }
 
