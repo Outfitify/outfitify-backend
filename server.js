@@ -1133,6 +1133,27 @@ async function buildOccasionPDF(content, occasionData, products) {
     return doc.heightOfString(str || '', { width, lineGap: 2 });
   };
 
+  // Caps text to a fixed number of lines, truncating with an ellipsis if
+  // needed — used on the picks page so a card's height is bounded and
+  // predictable regardless of how long the AI writes a name or why field,
+  // which is what makes fitting a fixed number of cards on one page reliable
+  function truncateToFit(str, maxWidth, fontSize, fontName, maxLines) {
+    if (!str) return '';
+    doc.fontSize(fontSize).font(fontName || 'Sans');
+    const lineGap = 1.5;
+    const maxH = maxLines * fontSize * 1.25 + (maxLines - 1) * lineGap;
+    if (doc.heightOfString(str, { width: maxWidth, lineGap }) <= maxH) return str;
+    const words = str.split(' ');
+    let lo = 1, hi = words.length, best = words[0];
+    while (lo <= hi) {
+      const mid = Math.floor((lo + hi) / 2);
+      const candidate = words.slice(0, mid).join(' ') + '…';
+      if (doc.heightOfString(candidate, { width: maxWidth, lineGap }) <= maxH) { best = candidate; lo = mid + 1; }
+      else hi = mid - 1;
+    }
+    return best;
+  }
+
   function pageHeader(sub) {
     doc.rect(0, 0, PW, 60).fill(WHITE);
     doc.rect(0, 60, PW, 1).fill(BORDER);
@@ -1173,40 +1194,29 @@ async function buildOccasionPDF(content, occasionData, products) {
   // which silently broke images from every other retailer in your sheet.
   // This derives the referer from each image's own domain instead.
   //
-  // Some retailers (e.g. ASOS) serve images from a separate CDN domain
-  // (images.asos-media.com) rather than their main site — sending that CDN
-  // domain back as its own Referer doesn't match how a real browser would
-  // load it (which would show the actual product page's domain), and can
-  // trigger the CDN's own anti-hotlink blocking. If the domain-matched
-  // Referer attempt fails, retry once with no Referer at all — many CDNs
-  // allow a missing Referer (treated as direct navigation) even when they
-  // reject a mismatched one.
+  // A prior version of this function tried a second attempt with no Referer
+  // header, on the theory that ASOS's media CDN might be blocking a
+  // mismatched Referer. Real deploy logs disproved that: both the
+  // domain-Referer attempt AND the no-Referer attempt failed identically
+  // with "timeout of 5000ms exceeded" — meaning it was never a header/
+  // blocking issue at all, just the CDN not responding within 5 seconds.
+  // Fix: give it more time, and retry the SAME request once in case it's a
+  // transient slow response rather than a consistently unreachable host.
   async function fetchProductImage(imageUrl) {
     if (!imageUrl) return null;
     const domain = new URL(imageUrl).hostname;
-    const baseHeaders = {
+    const headers = {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Referer': `https://${domain}/`,
       'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
     };
-    try {
-      const r = await axios.get(imageUrl, {
-        responseType: 'arraybuffer',
-        timeout: 5000,
-        headers: { ...baseHeaders, 'Referer': `https://${domain}/` },
-      });
-      return Buffer.from(r.data);
-    } catch (err) {
-      console.warn(`[image fetch] domain-referer attempt failed for ${imageUrl}: ${err.message} — retrying with no Referer`);
+    for (let attempt = 1; attempt <= 2; attempt++) {
       try {
-        const r2 = await axios.get(imageUrl, {
-          responseType: 'arraybuffer',
-          timeout: 5000,
-          headers: baseHeaders, // no Referer at all
-        });
-        return Buffer.from(r2.data);
-      } catch (err2) {
-        console.warn(`[image fetch] no-referer retry also failed for ${imageUrl}: ${err2.message}`);
-        return null; // falls back to a plain placeholder box — never breaks layout
+        const r = await axios.get(imageUrl, { responseType: 'arraybuffer', timeout: 8000, headers });
+        return Buffer.from(r.data);
+      } catch (err) {
+        console.warn(`[image fetch] attempt ${attempt} failed for ${imageUrl}: ${err.message}`);
+        if (attempt === 2) return null; // falls back to a plain placeholder box — never breaks layout
       }
     }
   }
@@ -1306,27 +1316,36 @@ async function buildOccasionPDF(content, occasionData, products) {
     pieceY += tipH + 12;
   }
 
-  const IMG_SIZE = 84;
+  // Shrunk from 84 and tightened padding throughout this section so up to
+  // 5 full cards (the max pieces.length can be) reliably fit on one page —
+  // previously an unbounded "why" text length plus a large image meant 4-5
+  // cards routinely overflowed onto a second page
+  const IMG_SIZE = 56;
 
   for (let i = 0; i < pieces.length; i++) {
     const piece = pieces[i];
     const hasImage = !!imageBuffers[i];
-    const textX = PAD + 14 + (hasImage ? IMG_SIZE + 14 : 0);
-    const priceRowH = 30;
-    const textW = PAD + IW - 14 - textX;
+    const textX = PAD + 10 + (hasImage ? IMG_SIZE + 12 : 0);
+    const priceRowH = 20;
+    const textW = PAD + IW - 10 - textX;
 
-    doc.fontSize(11).font('Serif-Bold');
-    const nameH = doc.heightOfString(piece.name || '', { width: textW });
-    doc.fontSize(8.5).font('Sans');
-    const whyH = doc.heightOfString(piece.why || '', { width: textW, lineGap: 1.5 });
+    const nameStr = truncateToFit(piece.name || '', textW, 10, 'Serif-Bold', 2);
+    const whyStr = truncateToFit(piece.why || '', textW, 8, 'Sans', 2);
 
-    const contentHgt = 14 + 12 + 6 + nameH + 6 + whyH;
-    const CARD_H = Math.max(hasImage ? IMG_SIZE + 28 : 64, contentHgt + priceRowH + 20);
+    doc.fontSize(10).font('Serif-Bold');
+    const nameH = doc.heightOfString(nameStr, { width: textW });
+    doc.fontSize(8).font('Sans');
+    const whyH = doc.heightOfString(whyStr, { width: textW, lineGap: 1.5 });
+
+    const contentHgt = 10 + 10 + 3 + nameH + 3 + whyH;
+    const CARD_H = Math.max(hasImage ? IMG_SIZE + 16 : 50, contentHgt + priceRowH + 8);
 
     // If a card doesn't fit, move to a new page rather than dropping it —
     // a dropped card here means a genuinely picked, correctly-described
     // product (the customer reads about it in the styling copy) silently
-    // never appears with a price or a "Shop this" link at all
+    // never appears with a price or a "Shop this" link at all. With the
+    // compact sizing above this should rarely trigger for up to 5 pieces,
+    // but stays as a safety net for unusually long AI-generated text.
     if (pieceY + CARD_H > PH - 100) {
       footer();
       doc.addPage();
@@ -1342,7 +1361,7 @@ async function buildOccasionPDF(content, occasionData, products) {
     // Product image — fixed box, clipped + cover-fit so it never distorts
     // or breaks the card layout, regardless of source image aspect ratio
     if (hasImage) {
-      const imgX = PAD + 14, imgY = pieceY + 14;
+      const imgX = PAD + 10, imgY = pieceY + 10;
       doc.save();
       try {
         doc.rect(imgX, imgY, IMG_SIZE, IMG_SIZE).clip();
@@ -1365,29 +1384,29 @@ async function buildOccasionPDF(content, occasionData, products) {
       }
     }
 
-    const catY = pieceY + 14;
-    doc.fontSize(7).fillColor(ACCENT).font('Sans-Bold')
+    const catY = pieceY + 10;
+    doc.fontSize(6.5).fillColor(ACCENT).font('Sans-Bold')
       .text((piece.category || '').toUpperCase(), textX, catY, { width: textW, lineBreak: false, characterSpacing: 1.5 });
 
-    const nameY = catY + 16;
-    doc.fontSize(11).fillColor(INK).font('Serif-Bold').text(piece.name || '', textX, nameY, { width: textW });
+    const nameY = catY + 13;
+    doc.fontSize(10).fillColor(INK).font('Serif-Bold').text(nameStr, textX, nameY, { width: textW });
 
-    const whyY = nameY + nameH + 6;
-    doc.fontSize(8.5).fillColor(INK_LIGHT).font('Sans').text(piece.why || '', textX, whyY, { width: textW, lineGap: 1.5 });
+    const whyY = nameY + nameH + 3;
+    doc.fontSize(8).fillColor(INK_LIGHT).font('Sans').text(whyStr, textX, whyY, { width: textW, lineGap: 1.5 });
 
     const productUrl = piece.url || allProductItems.find(p => p['Item Name'] === piece.name)?.['Product URL'] || null;
 
-    const bottomY = pieceY + CARD_H - 34;
-    doc.fontSize(14).fillColor(INK).font('Serif-Bold').text(piece.price || '', textX, bottomY, { lineBreak: false });
-    doc.fontSize(8).fillColor(INK_LIGHT).font('Sans').text(piece.brand || '', textX + 60, bottomY + 3, { lineBreak: false });
+    const bottomY = pieceY + CARD_H - 26;
+    doc.fontSize(12).fillColor(INK).font('Serif-Bold').text(piece.price || '', textX, bottomY, { lineBreak: false });
+    doc.fontSize(7.5).fillColor(INK_LIGHT).font('Sans').text(piece.brand || '', textX + 52, bottomY + 3, { lineBreak: false });
 
     if (productUrl) {
-      const btnW = 100, btnH = 26;
-      ctaPill(PAD + IW - 14 - btnW, bottomY - 2, btnW, btnH, 'Shop now');
-      doc.link(PAD + IW - 14 - btnW, bottomY - 2, btnW, btnH, productUrl);
+      const btnW = 82, btnH = 21;
+      ctaPill(PAD + IW - 10 - btnW, bottomY - 2, btnW, btnH, 'Shop now');
+      doc.link(PAD + IW - 10 - btnW, bottomY - 2, btnW, btnH, productUrl);
     }
 
-    pieceY += CARD_H + 8;
+    pieceY += CARD_H + 5;
   }
 
   // ── COMPLETE YOUR LOOK ──
