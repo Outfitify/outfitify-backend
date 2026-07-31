@@ -829,7 +829,8 @@ NIGHT OUT RULES:
 SMART CASUAL WORK RULES:
 - NO sportswear, gym wear, hoodies or joggers ever
 - LAYERING: For office or hybrid always recommend a jacket or smart overshirt layer — it immediately makes the look more considered and gives them something to take off
-- occasionDetail and occasionDetail2 are both about work location — office full time needs the sharpest look, hybrid is slightly more relaxed, WFH with occasional office days can be the most relaxed but still needs to look intentional on camera
+- occasionDetail is work location — office full time needs the sharpest look, hybrid is slightly more relaxed, WFH with occasional office days can be the most relaxed but still needs to look intentional on camera
+- occasionDetail2 is the workplace's dress code culture, independent of location — formal culture means suits/blazers are genuinely expected even on a WFH-with-occasional-days setup; smart casual culture is the default assumption; casual culture (jeans/hoodies normal) means dialling back the formality even for someone in the office full time. Use both together — location sets how OFTEN they need to be dressed up, culture sets HOW dressed up that actually needs to be
 - Chinos, smart trousers, shirts, smart casual jackets, clean shoes always`,
 
     'summer-holiday': `
