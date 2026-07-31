@@ -724,6 +724,26 @@ function findCategoryMismatches(parsed) {
   return violations;
 }
 
+// Catches a different failure from the one above: the AI simply skipping a
+// mandatory Top or Bottoms pick even though the prompt says both are
+// required and suitable products genuinely existed in the fetched pool
+// (e.g. logs showed "Top: 4 products" yet recommendedPieces had none). This
+// is a rule-compliance failure, not a sheet-coverage gap — retrying makes
+// sense here specifically because we know products were available. If the
+// pool for that category is genuinely empty, this does NOT flag it, since
+// no retry could fix a real data gap.
+function findMissingMandatoryPicks(parsed, products) {
+  const pickedCategories = new Set((parsed.recommendedPieces || []).map(p => (p.category || '').toLowerCase()));
+  const violations = [];
+  if (!pickedCategories.has('top') && (products['Top'] || []).length > 0) {
+    violations.push(`Top missing despite ${products['Top'].length} available product(s)`);
+  }
+  if (!pickedCategories.has('bottoms') && (products['Bottoms'] || []).length > 0) {
+    violations.push(`Bottoms missing despite ${products['Bottoms'].length} available product(s)`);
+  }
+  return violations;
+}
+
 async function generateOccasionContent(occasionData, products) {
   const productList = [];
   for (const [cat, items] of Object.entries(products)) {
@@ -1041,7 +1061,7 @@ Rules:
       const candidate = JSON.parse(text);
       console.log(`=== OCCASION CONTENT attempt ${attempt} ===\n${JSON.stringify(candidate, null, 2)}\n=== END ===`);
 
-      const violations = findCategoryMismatches(candidate);
+      const violations = findCategoryMismatches(candidate).concat(findMissingMandatoryPicks(candidate, products));
       parsed = candidate; // keep as the best-available fallback even if this attempt still has violations
       if (violations.length > 0) {
         console.warn(`[content-mismatch] attempt ${attempt} describes unpicked categories: ${violations.join(', ')}`);
@@ -1294,7 +1314,13 @@ async function buildOccasionPDF(content, occasionData, products) {
       doc.save();
       try {
         doc.rect(imgX, imgY, IMG_SIZE, IMG_SIZE).clip();
-        doc.image(imageBuffers[i], imgX, imgY, { width: IMG_SIZE, height: IMG_SIZE, cover: [IMG_SIZE, IMG_SIZE] });
+        // No align/valign previously set — PDFKit's cover mode defaults to
+        // top-left anchoring, which silently crops off the BOTTOM of any
+        // taller-than-square product photo. For full-length/lifestyle shots
+        // (very common for shoes, but also bottoms) that meant the actual
+        // product barely appeared, leaving mostly background/floor visible.
+        // Anchoring to the bottom shows far more of the actual garment.
+        doc.image(imageBuffers[i], imgX, imgY, { width: IMG_SIZE, height: IMG_SIZE, cover: [IMG_SIZE, IMG_SIZE], align: 'center', valign: 'bottom' });
       } catch {
         doc.rect(imgX, imgY, IMG_SIZE, IMG_SIZE).fill(BORDER);
       } finally {
@@ -1325,7 +1351,7 @@ async function buildOccasionPDF(content, occasionData, products) {
 
     if (productUrl) {
       const btnW = 100, btnH = 26;
-      ctaPill(PAD + IW - 14 - btnW, bottomY - 2, btnW, btnH, 'Shop this →');
+      ctaPill(PAD + IW - 14 - btnW, bottomY - 2, btnW, btnH, 'Shop now');
       doc.link(PAD + IW - 14 - btnW, bottomY - 2, btnW, btnH, productUrl);
     }
 
@@ -2327,7 +2353,7 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
     const imgY = pieceY + (CARD_H - IMG_W) / 2;
     if (imageBuffers[i]) {
       doc.save();
-      try { doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).clip(); doc.image(imageBuffers[i], PAD + IMG_PAD, imgY, { width: IMG_W, height: IMG_W, cover: [IMG_W, IMG_W] }); }
+      try { doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).clip(); doc.image(imageBuffers[i], PAD + IMG_PAD, imgY, { width: IMG_W, height: IMG_W, cover: [IMG_W, IMG_W], align: 'center', valign: 'bottom' }); }
       catch { doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).fill(CARD2); }
       finally { doc.restore(); }
     } else { doc.rect(PAD + IMG_PAD, imgY, IMG_W, IMG_W).fill(CARD2); }
