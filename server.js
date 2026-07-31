@@ -1309,18 +1309,24 @@ async function buildOccasionPDF(content, occasionData, products) {
 
   // Quick recap checklist — new: gives a real "before you leave" checklist,
   // the kind of thing a real stylist actually hands you
-  if (curY + 70 < PH - 80 && Array.isArray(content.quickRecap) && content.quickRecap.length > 0) {
-    sectionLabel('QUICK RECAP BEFORE YOU LEAVE', curY);
-    curY += 21;
+  const hasQuickRecap = Array.isArray(content.quickRecap) && content.quickRecap.length > 0;
+  function renderQuickRecap(y) {
+    sectionLabel('QUICK RECAP BEFORE YOU LEAVE', y);
+    y += 21;
     const recapH = content.quickRecap.length * 16 + 20;
-    lcard(PAD, curY, IW, recapH);
-    let recapY = curY + 12;
+    lcard(PAD, y, IW, recapH);
+    let recapY = y + 12;
     content.quickRecap.forEach(item => {
       doc.fontSize(9.5).fillColor(ACCENT).font('Sans-Bold').text('✓', PAD + 14, recapY, { lineBreak: false });
       doc.fontSize(9.5).fillColor(INK_MID).font('Sans').text(item, PAD + 30, recapY, { width: IW - 44, lineBreak: false });
       recapY += 16;
     });
-    curY += recapH + 16;
+    return y + recapH + 16;
+  }
+  let quickRecapRenderedOnPage1 = false;
+  if (hasQuickRecap && curY + 70 < PH - 80) {
+    curY = renderQuickRecap(curY);
+    quickRecapRenderedOnPage1 = true;
   }
 
   footer();
@@ -1330,7 +1336,19 @@ async function buildOccasionPDF(content, occasionData, products) {
   bg();
   pageHeader('Your Picks');
 
-  const pieces = (content.recommendedPieces || []).slice(0, 5);
+  // Fixed display order regardless of whatever order the AI returned
+  // recommendedPieces in — previously Bottoms could render before Top,
+  // which reads oddly on a customer-facing page and doesn't match how the
+  // outfit is described in the styling text (shirt, then trousers, then...)
+  const CATEGORY_ORDER = ['Top', 'Bottoms', 'Dress', 'Jacket', 'Hoodie/Jacket', 'Shoes', 'Accessory'];
+  const categoryRank = (cat) => {
+    const idx = CATEGORY_ORDER.indexOf(cat);
+    return idx === -1 ? CATEGORY_ORDER.length : idx;
+  };
+  const pieces = (content.recommendedPieces || [])
+    .slice()
+    .sort((a, b) => categoryRank(a.category) - categoryRank(b.category))
+    .slice(0, 5);
 
   // Fetch all product images up front, in parallel
   const imageBuffers = await Promise.all(pieces.map(piece => {
@@ -1344,6 +1362,13 @@ async function buildOccasionPDF(content, occasionData, products) {
     .text(`Products matched to your ${isWomens ? 'shape' : 'build'}, your budget and ${(occasionData.occasionName || '').toLowerCase()}`, PAD, 142, { width: IW });
 
   let pieceY = 170;
+
+  // If the recap checklist didn't fit on page 1, it lands here instead of
+  // just vanishing — page 2 already exists right after, so this is a
+  // natural place for it rather than an awkward dedicated extra page
+  if (hasQuickRecap && !quickRecapRenderedOnPage1) {
+    pieceY = renderQuickRecap(pieceY);
+  }
 
   if (content.stylistTip) {
     const tipH = Math.max(textH(content.stylistTip, 9, 'Sans', IW - 28) + 28, 44);
