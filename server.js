@@ -1,4 +1,11 @@
 require('dotenv').config();
+// Both image-fetch timeout attempts hit their exact limit every time
+// (5000ms, then 8000ms) rather than completing slowly-but-successfully —
+// that pattern points to a hung/blackholed IPv6 route to that specific
+// host rather than genuine slowness, which is a common cause of this exact
+// symptom in containerized environments. Forcing IPv4-first resolution is
+// a low-risk fix that doesn't affect anything if this isn't the real cause.
+require('dns').setDefaultResultOrder('ipv4first');
 const express = require('express');
 const cors = require('cors');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
@@ -1171,6 +1178,23 @@ async function buildOccasionPDF(content, occasionData, products) {
       .text('OUTFITIFY.CO.UK  ·  OCCASION STYLE GUIDE', 0, PH - 18, { width: PW, align: 'center', characterSpacing: 1 });
   }
 
+  // Ensures at least `neededHeight` of room remains before the bottom margin;
+  // starts a fresh page if not. Every section from "Wear It Again" onward
+  // used to just silently skip drawing itself entirely when it didn't fit,
+  // with no page-break fallback — this replaces that pattern everywhere so
+  // real, AI-generated content (search terms, brand picks, the sign-off)
+  // can never just vanish from a guide because space ran tight.
+  function ensurePageSpace(currentY, neededHeight, headerLabel, bottomMargin) {
+    if (currentY + neededHeight > PH - bottomMargin) {
+      footer();
+      doc.addPage();
+      bg();
+      pageHeader(headerLabel);
+      return 80;
+    }
+    return currentY;
+  }
+
   function sectionLabel(text, y, color) {
     doc.fontSize(7).fillColor(color || ACCENT).font('Sans-Bold').text(text, PAD, y, { characterSpacing: 3 });
     doc.moveTo(PAD, y + 13).lineTo(PAD + IW, y + 13).strokeColor(BORDER).lineWidth(0.5).stroke();
@@ -1200,8 +1224,14 @@ async function buildOccasionPDF(content, occasionData, products) {
   // domain-Referer attempt AND the no-Referer attempt failed identically
   // with "timeout of 5000ms exceeded" — meaning it was never a header/
   // blocking issue at all, just the CDN not responding within 5 seconds.
-  // Fix: give it more time, and retry the SAME request once in case it's a
-  // transient slow response rather than a consistently unreachable host.
+  // A follow-up fix increased the timeout to 8000ms with a same-request
+  // retry — logs then showed BOTH attempts timing out at exactly 8000ms
+  // every time, which looks like a hung/blackholed route (paired with the
+  // ipv4first DNS fix above) rather than genuine slowness. As a third,
+  // structurally different fallback: if direct attempts still fail, try
+  // fetching via images.weserv.nl, a free image proxy — a completely
+  // separate server does the actual fetching from there, so it sidesteps
+  // whatever is specifically blocking Railway's own direct connection.
   async function fetchProductImage(imageUrl) {
     if (!imageUrl) return null;
     const domain = new URL(imageUrl).hostname;
@@ -1215,9 +1245,17 @@ async function buildOccasionPDF(content, occasionData, products) {
         const r = await axios.get(imageUrl, { responseType: 'arraybuffer', timeout: 8000, headers });
         return Buffer.from(r.data);
       } catch (err) {
-        console.warn(`[image fetch] attempt ${attempt} failed for ${imageUrl}: ${err.message}`);
-        if (attempt === 2) return null; // falls back to a plain placeholder box — never breaks layout
+        console.warn(`[image fetch] direct attempt ${attempt} failed for ${imageUrl}: ${err.message}`);
       }
+    }
+    try {
+      const proxyUrl = `https://wsrv.nl/?url=${encodeURIComponent(imageUrl.replace(/^https?:\/\//, ''))}`;
+      const r = await axios.get(proxyUrl, { responseType: 'arraybuffer', timeout: 8000 });
+      console.log(`[image fetch] proxy fallback succeeded for ${imageUrl}`);
+      return Buffer.from(r.data);
+    } catch (err) {
+      console.warn(`[image fetch] proxy fallback also failed for ${imageUrl}: ${err.message}`);
+      return null; // falls back to a plain placeholder box — never breaks layout
     }
   }
 
@@ -1503,10 +1541,11 @@ async function buildOccasionPDF(content, occasionData, products) {
 
   // Re-wear tip — new: shows this isn't a one-occasion piece, ties value
   // forward to future guides
-  if (content.restyleTip && pieceY + 60 < PH - 100) {
+  if (content.restyleTip) {
+    const rwH = Math.max(textH(content.restyleTip, 9.5, 'Sans', IW - 28) + 28, 48);
+    pieceY = ensurePageSpace(pieceY, 12 + 21 + rwH + 16, 'Wear It Again', 100);
     const rwY = pieceY + 12;
     sectionLabel('WEAR IT AGAIN', rwY);
-    const rwH = Math.max(textH(content.restyleTip, 9.5, 'Sans', IW - 28) + 28, 48);
     lcard(PAD, rwY + 21, IW, rwH);
     doc.fontSize(9.5).fillColor(INK_MID).font('Sans').text(content.restyleTip, PAD + 14, rwY + 33, { width: IW - 28, lineGap: 3 });
     pieceY = rwY + 21 + rwH + 16;
@@ -1514,20 +1553,22 @@ async function buildOccasionPDF(content, occasionData, products) {
 
   // ── WHERE TO SHOP YOURSELF ──
   const ws = content.whereToShop;
+  const WS_HEADER = 'If Our Picks Are Not Quite Right';
   if (ws) {
-    const wsNeeded = 80;
-    if (pieceY + wsNeeded >= PH - 60) {
-      footer(); doc.addPage(); bg(); pageHeader('If Our Picks Are Not Quite Right'); pieceY = 50;
-    }
+    pieceY = ensurePageSpace(pieceY, 80, WS_HEADER, 60);
     const shopY = pieceY + 16;
-    if (shopY + 20 < PH - 60) sectionLabel('IF OUR PICKS ARE NOT QUITE RIGHT', shopY);
+    sectionLabel('IF OUR PICKS ARE NOT QUITE RIGHT', shopY);
     let wsY = shopY + 21;
-    if (ws.intro && wsY < PH - 60) {
+
+    if (ws.intro) {
+      const introH = textH(ws.intro, 9.5, 'Sans', IW);
+      wsY = ensurePageSpace(wsY, introH + 14, WS_HEADER, 60);
       doc.fontSize(9.5).fillColor(INK_MID).font('Sans').text(ws.intro, PAD, wsY, { width: IW, lineGap: 3 });
-      wsY += textH(ws.intro, 9.5, 'Sans', IW) + 14;
+      wsY += introH + 14;
     }
+
     (ws.searchTerms || []).forEach(term => {
-      if (wsY + 52 > PH - 60) return;
+      wsY = ensurePageSpace(wsY, 52, WS_HEADER, 60);
       doc.rect(PAD, wsY, IW, 48).fill(OFFWHITE);
       doc.rect(PAD, wsY, IW, 48).strokeColor(BORDER).lineWidth(0.5).stroke();
       doc.rect(PAD, wsY, 2, 48).fill(ACCENT);
@@ -1536,50 +1577,49 @@ async function buildOccasionPDF(content, occasionData, products) {
       doc.fontSize(7.5).fillColor(INK_LIGHT).font('Sans').text(term.whatToLookFor || '', PAD + 14 + (IW - 28) / 2 + 8, wsY + 24, { width: (IW - 28) / 2 - 8 });
       wsY += 54;
     });
-    if (wsY + 48 < PH - 60) {
+
+    {
       const hw = (IW - 8) / 2;
       doc.fontSize(8.5).font('Sans');
       const brandsH = Math.max(48, doc.heightOfString(ws.brandsToConsider || '', { width: hw - 28 }) + 28);
       const priceH  = Math.max(48, doc.heightOfString(ws.priceGuidance  || '', { width: hw - 28 }) + 28);
       const infoCardH = Math.max(brandsH, priceH);
-      if (wsY + infoCardH < PH - 60) {
-        doc.rect(PAD, wsY, hw, infoCardH).fill(OFFWHITE);
-        doc.rect(PAD, wsY, hw, infoCardH).strokeColor(BORDER).lineWidth(0.5).stroke();
-        doc.rect(PAD, wsY, 2, infoCardH).fill(ACCENT);
-        doc.fontSize(6.5).fillColor(ACCENT).font('Sans-Bold').text('BRANDS TO CONSIDER', PAD + 14, wsY + 8, { characterSpacing: 2 });
-        doc.fontSize(8.5).fillColor(INK_MID).font('Sans').text(ws.brandsToConsider || '', PAD + 14, wsY + 22, { width: hw - 28 });
-        const col2x = PAD + hw + 8;
-        doc.rect(col2x, wsY, hw, infoCardH).fill(OFFWHITE);
-        doc.rect(col2x, wsY, hw, infoCardH).strokeColor(BORDER).lineWidth(0.5).stroke();
-        doc.rect(col2x, wsY, 2, infoCardH).fill(ACCENT);
-        doc.fontSize(6.5).fillColor(ACCENT).font('Sans-Bold').text('PRICE GUIDANCE', col2x + 14, wsY + 8, { characterSpacing: 2 });
-        doc.fontSize(8.5).fillColor(INK_MID).font('Sans').text(ws.priceGuidance || '', col2x + 14, wsY + 22, { width: hw - 28 });
-        wsY += infoCardH + 8;
-      }
+      wsY = ensurePageSpace(wsY, infoCardH, WS_HEADER, 60);
+      doc.rect(PAD, wsY, hw, infoCardH).fill(OFFWHITE);
+      doc.rect(PAD, wsY, hw, infoCardH).strokeColor(BORDER).lineWidth(0.5).stroke();
+      doc.rect(PAD, wsY, 2, infoCardH).fill(ACCENT);
+      doc.fontSize(6.5).fillColor(ACCENT).font('Sans-Bold').text('BRANDS TO CONSIDER', PAD + 14, wsY + 8, { characterSpacing: 2 });
+      doc.fontSize(8.5).fillColor(INK_MID).font('Sans').text(ws.brandsToConsider || '', PAD + 14, wsY + 22, { width: hw - 28 });
+      const col2x = PAD + hw + 8;
+      doc.rect(col2x, wsY, hw, infoCardH).fill(OFFWHITE);
+      doc.rect(col2x, wsY, hw, infoCardH).strokeColor(BORDER).lineWidth(0.5).stroke();
+      doc.rect(col2x, wsY, 2, infoCardH).fill(ACCENT);
+      doc.fontSize(6.5).fillColor(ACCENT).font('Sans-Bold').text('PRICE GUIDANCE', col2x + 14, wsY + 8, { characterSpacing: 2 });
+      doc.fontSize(8.5).fillColor(INK_MID).font('Sans').text(ws.priceGuidance || '', col2x + 14, wsY + 22, { width: hw - 28 });
+      wsY += infoCardH + 8;
     }
+
     if (ws.avoid) {
       doc.fontSize(7).font('Sans');
       const avoidLabel = 'AVOID WHEN SHOPPING:  ';
       const avoidCardH = Math.max(36, doc.heightOfString(avoidLabel + ws.avoid, { width: IW - 28 }) + 20);
-      if (wsY + avoidCardH < PH - 60) {
-        doc.rect(PAD, wsY, IW, avoidCardH).fill(OFFWHITE);
-        doc.rect(PAD, wsY, IW, avoidCardH).strokeColor(BORDER).lineWidth(0.5).stroke();
-        doc.rect(PAD, wsY, 2, avoidCardH).fill(RED);
-        doc.fontSize(7).fillColor(RED).font('Sans-Bold').text('AVOID WHEN SHOPPING:', PAD + 14, wsY + 12);
-        const avoidLabelW = doc.widthOfString('AVOID WHEN SHOPPING:');
-        doc.fontSize(7).fillColor(INK_MID).font('Sans').text(' ' + ws.avoid, PAD + 14 + avoidLabelW, wsY + 12, { width: IW - 28 - avoidLabelW, lineBreak: true });
-        wsY += avoidCardH + 20;
-      }
+      wsY = ensurePageSpace(wsY, avoidCardH, WS_HEADER, 60);
+      doc.rect(PAD, wsY, IW, avoidCardH).fill(OFFWHITE);
+      doc.rect(PAD, wsY, IW, avoidCardH).strokeColor(BORDER).lineWidth(0.5).stroke();
+      doc.rect(PAD, wsY, 2, avoidCardH).fill(RED);
+      doc.fontSize(7).fillColor(RED).font('Sans-Bold').text('AVOID WHEN SHOPPING:', PAD + 14, wsY + 12);
+      const avoidLabelW = doc.widthOfString('AVOID WHEN SHOPPING:');
+      doc.fontSize(7).fillColor(INK_MID).font('Sans').text(' ' + ws.avoid, PAD + 14 + avoidLabelW, wsY + 12, { width: IW - 28 - avoidLabelW, lineBreak: true });
+      wsY += avoidCardH + 20;
     }
 
-    // Personal sign-off — new: closing line signed by a named stylist,
-    // the single biggest lever for "a human sent this" beyond word choice
-    if (wsY + 30 < PH - 60) {
-      doc.fontSize(10).fillColor(INK).font('Serif-Italic')
-        .text(`That's your look sorted — have a good one.`, PAD, wsY, { width: IW });
-      doc.fontSize(10).fillColor(ACCENT).font('Serif-Bold')
-        .text(`— ${STYLIST_NAME}, your Outfitify stylist`, PAD, wsY + 18, { width: IW });
-    }
+    // Personal sign-off — deliberately never allowed to just vanish; always
+    // ensures space rather than silently skipping like it used to
+    wsY = ensurePageSpace(wsY, 30, WS_HEADER, 60);
+    doc.fontSize(10).fillColor(INK).font('Serif-Italic')
+      .text(`That's your look sorted — have a good one.`, PAD, wsY, { width: IW });
+    doc.fontSize(10).fillColor(ACCENT).font('Serif-Bold')
+      .text(`— ${STYLIST_NAME}, your Outfitify stylist`, PAD, wsY + 18, { width: IW });
   }
 
   footer();
