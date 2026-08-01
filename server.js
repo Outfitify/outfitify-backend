@@ -1385,29 +1385,31 @@ async function buildOccasionPDF(content, occasionData, products) {
     pieceY += tipH + 12;
   }
 
-  // Shrunk from 84 and tightened padding throughout this section so up to
-  // 5 full cards (the max pieces.length can be) reliably fit on one page —
-  // previously an unbounded "why" text length plus a large image meant 4-5
-  // cards routinely overflowed onto a second page
-  const IMG_SIZE = 56;
+  // Why-text length is capped at the RENDER layer (truncateToFit, 3 lines
+  // below) rather than relied on the AI to self-limit via a character-count
+  // prompt rule — real deploy evidence showed the AI didn't reliably follow
+  // that instruction, so this is the actual enforceable fix. Image shrunk
+  // further and padding tightened to reclaim the space a 3rd line needs
+  // while still fitting up to 5 cards on one page.
+  const IMG_SIZE = 48;
 
   for (let i = 0; i < pieces.length; i++) {
     const piece = pieces[i];
     const hasImage = !!imageBuffers[i];
-    const textX = PAD + 10 + (hasImage ? IMG_SIZE + 12 : 0);
-    const priceRowH = 20;
-    const textW = PAD + IW - 10 - textX;
+    const textX = PAD + 8 + (hasImage ? IMG_SIZE + 10 : 0);
+    const priceRowH = 18;
+    const textW = PAD + IW - 8 - textX;
 
     const nameStr = truncateToFit(piece.name || '', textW, 10, 'Serif-Bold', 2);
-    const whyStr = truncateToFit(piece.why || '', textW, 8, 'Sans', 2);
+    const whyStr = truncateToFit(piece.why || '', textW, 8, 'Sans', 3);
 
     doc.fontSize(10).font('Serif-Bold');
     const nameH = doc.heightOfString(nameStr, { width: textW });
     doc.fontSize(8).font('Sans');
     const whyH = doc.heightOfString(whyStr, { width: textW, lineGap: 1.5 });
 
-    const contentHgt = 10 + 10 + 3 + nameH + 3 + whyH;
-    const CARD_H = Math.max(hasImage ? IMG_SIZE + 16 : 50, contentHgt + priceRowH + 8);
+    const contentHgt = 8 + 9 + 2 + nameH + 2 + whyH;
+    const CARD_H = Math.max(hasImage ? IMG_SIZE + 14 : 42, contentHgt + priceRowH + 6);
 
     // If a card doesn't fit, move to a new page rather than dropping it —
     // a dropped card here means a genuinely picked, correctly-described
@@ -1430,7 +1432,7 @@ async function buildOccasionPDF(content, occasionData, products) {
     // Product image — fixed box, clipped + cover-fit so it never distorts
     // or breaks the card layout, regardless of source image aspect ratio
     if (hasImage) {
-      const imgX = PAD + 10, imgY = pieceY + 10;
+      const imgX = PAD + 8, imgY = pieceY + 8;
       doc.save();
       try {
         doc.rect(imgX, imgY, IMG_SIZE, IMG_SIZE).clip();
@@ -1453,29 +1455,29 @@ async function buildOccasionPDF(content, occasionData, products) {
       }
     }
 
-    const catY = pieceY + 10;
+    const catY = pieceY + 8;
     doc.fontSize(6.5).fillColor(ACCENT).font('Sans-Bold')
       .text((piece.category || '').toUpperCase(), textX, catY, { width: textW, lineBreak: false, characterSpacing: 1.5 });
 
-    const nameY = catY + 13;
+    const nameY = catY + 12;
     doc.fontSize(10).fillColor(INK).font('Serif-Bold').text(nameStr, textX, nameY, { width: textW });
 
-    const whyY = nameY + nameH + 3;
+    const whyY = nameY + nameH + 2;
     doc.fontSize(8).fillColor(INK_LIGHT).font('Sans').text(whyStr, textX, whyY, { width: textW, lineGap: 1.5 });
 
     const productUrl = piece.url || allProductItems.find(p => p['Item Name'] === piece.name)?.['Product URL'] || null;
 
-    const bottomY = pieceY + CARD_H - 26;
+    const bottomY = pieceY + CARD_H - 24;
     doc.fontSize(12).fillColor(INK).font('Serif-Bold').text(piece.price || '', textX, bottomY, { lineBreak: false });
     doc.fontSize(7.5).fillColor(INK_LIGHT).font('Sans').text(piece.brand || '', textX + 52, bottomY + 3, { lineBreak: false });
 
     if (productUrl) {
       const btnW = 82, btnH = 21;
-      ctaPill(PAD + IW - 10 - btnW, bottomY - 2, btnW, btnH, 'Shop now');
-      doc.link(PAD + IW - 10 - btnW, bottomY - 2, btnW, btnH, productUrl);
+      ctaPill(PAD + IW - 8 - btnW, bottomY - 2, btnW, btnH, 'Shop now');
+      doc.link(PAD + IW - 8 - btnW, bottomY - 2, btnW, btnH, productUrl);
     }
 
-    pieceY += CARD_H + 5;
+    pieceY += CARD_H + 4;
   }
 
   // ── COMPLETE YOUR LOOK ──
