@@ -748,6 +748,10 @@ function findCategoryMismatches(parsed) {
 // no retry could fix a real data gap.
 function findMissingMandatoryPicks(parsed, products) {
   const pickedCategories = new Set((parsed.recommendedPieces || []).map(p => (p.category || '').toLowerCase()));
+  // A Dress is a legitimate substitute for both Top and Bottoms — without
+  // this, a correctly dress-based outfit got wrongly flagged as missing
+  // both, burning 1-2 unnecessary retry round-trips to Claude every time
+  if (pickedCategories.has('dress')) return [];
   const violations = [];
   if (!pickedCategories.has('top') && (products['Top'] || []).length > 0) {
     violations.push(`Top missing despite ${products['Top'].length} available product(s)`);
@@ -983,10 +987,11 @@ WHY TEXT RULES — CRITICAL:
 - Example good why: "Super slim fit means the fabric follows your frame without billowing — black keeps the colour palette clean for a restaurant setting"
 - Example bad why: "A great choice for date night that shows you made an effort"
 - Include specific colour, fit detail, or fabric detail in every why
+- HARD LIMIT: every why field must be under 150 characters total, including spaces. The PDF card has fixed, limited space — a why field over this length gets cut off mid-sentence with "…", which reads as broken and unfinished. Write one complete, punchy sentence that fits, not a longer thought trimmed down. If you can't say it specifically AND completely in under 150 characters, simplify the reasoning rather than run over.
 
 OVER-BUDGET CHECK — CRITICAL:
 - Some products in the list are marked with a "note" field saying they are above the customer's selected budget tier — this happens when nothing suitable existed at their actual budget for that category
-- If you pick one of these products, you MUST honestly acknowledge the price gap in that item's "why" field — e.g. "This runs above your usual budget, but nothing at your price point matched the occasion properly — it's worth the stretch for a wedding" — never write a why for an over-budget pick as if the price were normal
+- If you pick one of these products, you MUST honestly acknowledge the price gap in that item's "why" field — e.g. "This runs above your usual budget, but nothing at your price point matched the occasion properly — worth the stretch here" — never write a why for an over-budget pick as if the price were normal. This still counts toward the 150-character limit above — keep the acknowledgment brief.
 - Prefer a product within the customer's actual budget whenever one exists; only reach for a flagged over-budget item when it's genuinely the best or only suitable option in that category
 
 OUTFIT FORMULA RULES — CRITICAL:
@@ -1561,18 +1566,13 @@ async function buildOccasionPDF(content, occasionData, products) {
   }
 
   if (completeYourLook.length > 0) {
-    // Real space needed: 12px (pieceY→cylY) + 21px (cylY→cylCurY) + 72px (min card height)
-    // Must match exactly, or a narrow gap between this check and the actual
-    // draw position can still produce an orphaned header with no card beneath it
-    if (pieceY + 12 + 21 + 72 >= PH - 100) {
-      footer(); doc.addPage(); bg(); pageHeader('Complete Your Look'); pieceY = 50;
-    }
+    pieceY = ensurePageSpace(pieceY, 12 + 21 + 72, 'Complete Your Look', 100);
     const cylY = pieceY + 12;
     sectionLabel('COMPLETE YOUR LOOK', cylY);
     let cylCurY = cylY + 21;
     completeYourLook.forEach(item => {
-      if (cylCurY + 72 > PH - 100) return;
       const cardH = Math.max(72, textH(item.guidance, 9, 'Sans', IW - 28) + 36);
+      cylCurY = ensurePageSpace(cylCurY, cardH, 'Complete Your Look (continued)', 100);
       doc.rect(PAD, cylCurY, IW, cardH).fill(OFFWHITE);
       doc.rect(PAD, cylCurY, IW, cardH).strokeColor(BORDER).lineWidth(0.5).stroke();
       doc.rect(PAD, cylCurY, 2, cardH).fill(ACCENT);
