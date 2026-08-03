@@ -203,6 +203,8 @@ async function fetchOccasionProducts(occasion, budget, fit, gender = 'mens') {
     'night-out':            'night out',
     'smart-casual-work':    'smart casual work',
     'holiday-travel':       'summer holiday',
+    'christmas-party':      'christmas party',
+    'cold-weather-casual':  'cold weather casual',
     'w-date-night':         'date night',
     'w-job-interview':      'job interview',
     'w-wedding-guest':      'wedding guest',
@@ -210,6 +212,8 @@ async function fetchOccasionProducts(occasion, budget, fit, gender = 'mens') {
     'w-brunch':             'brunch',
     'w-summer-holiday':     'summer holiday',
     'w-festival':           'festival',
+    'w-christmas-party':    'christmas party',
+    'w-cosy-weekend':       'cosy weekend',
   };
 
   function matchesOccasion(product, target) {
@@ -261,7 +265,7 @@ async function fetchOccasionProducts(occasion, budget, fit, gender = 'mens') {
     : ['Top', 'Bottoms', 'Shoes', 'Jacket', 'Hoodie/Jacket', 'Accessory'];
   const selected = {};
 
-  const currentSeason = getCurrentSeason();
+  const currentSeason = getEffectiveSeason(occasion);
   console.log(`[fetchOccasionProducts] currentSeason=${currentSeason}`);
 
   // Season-filtered first, same cascade philosophy as budget: prefer a
@@ -704,6 +708,22 @@ function getCurrentSeason() {
   return 'Winter';
 }
 
+// Some occasions are always conceptually one season regardless of the
+// calendar date a guide happens to be generated on — Christmas Party is
+// always winter even if someone tests it in July. Shared at module scope
+// so product-matching (fetchOccasionProducts) and the AI prompt
+// (generateOccasionContent) can never drift apart on which season they
+// think it is for a given occasion.
+const FIXED_SEASON_OCCASIONS = {
+  'christmas-party': 'Winter',
+  'cold-weather-casual': 'Winter',
+  'w-christmas-party': 'Winter',
+  'w-cosy-weekend': 'Winter',
+};
+function getEffectiveSeason(occasion) {
+  return FIXED_SEASON_OCCASIONS[occasion] || getCurrentSeason();
+}
+
 // Catches a real, recurring content-accuracy bug: the AI describing a product
 // in occasionTitle/whatToWear (e.g. "chunky trainers and an ecru bucket hat")
 // that was never actually included in recommendedPieces — leaving the
@@ -837,6 +857,24 @@ SMART CASUAL WORK RULES:
 - occasionDetail2 is the workplace's dress code culture, independent of location — formal culture means suits/blazers are genuinely expected even on a WFH-with-occasional-days setup; smart casual culture is the default assumption; casual culture (jeans/hoodies normal) means dialling back the formality even for someone in the office full time. Use both together — location sets how OFTEN they need to be dressed up, culture sets HOW dressed up that actually needs to be
 - Chinos, smart trousers, shirts, smart casual jackets, clean shoes always`,
 
+    'christmas-party': `
+CHRISTMAS / NYE PARTY RULES:
+- occasionDetail is the type of event — office party needs to stay work-appropriate even if festive, family gathering can be more relaxed but still put-together, NYE night out is the most dressed-up, casual drinks with friends is the most relaxed
+- occasionDetail2 is the dress code — black tie or strict formal means a proper suit; festive theme means genuinely leaning into colour, texture or a statement piece (velvet blazer, patterned shirt); smart casual expected means elevated basics with a jacket; no dress code means personal style leads but still put-together, not sloppy
+- LAYERING: A jacket, blazer or smart coat is almost always the right call — even a casual Christmas gathering benefits from one considered outer layer
+- Dark or festive colours work well — navy, burgundy, deep green, black — richer and more seasonal than a typical smart-casual palette
+- NO actual novelty Christmas jumpers or fancy dress items unless occasionDetail2 explicitly says festive theme or fancy dress — otherwise this should read as genuinely dressed for a party, not dressed for a joke
+- Season is always Winter for this occasion regardless of when the guide is generated — heavier fabrics, real outerwear`,
+
+    'cold-weather-casual': `
+COLD WEATHER CASUAL RULES:
+- occasionDetail is the activity — errands need something quick and practical, outdoor activity needs real warmth and weatherproofing, seeing friends or family is relaxed but still put-together, a day moving between indoors and out needs genuine layering flexibility
+- occasionDetail2 is duration — a quick trip can get away with less, half a day and especially all day need pieces that stay warm and comfortable throughout without needing to be removed and carried
+- LAYERING is the entire point of this occasion, not an afterthought — a proper coat or jacket, a jumper or hoodie mid-layer, and a base layer that can adapt as temperature changes between indoors and out
+- Practical, genuinely weather-appropriate fabrics matter here — wool, fleece-lined, water-resistant outerwear — this is not a styling-only occasion, it needs to actually keep them warm
+- Trainers or boots are both fine depending on style preference — this occasion does NOT carry the "no trainers" restriction that formal or date occasions do
+- Season is always Winter for this occasion regardless of when the guide is generated`,
+
     'summer-holiday': `
 SUMMER HOLIDAY RULES:
 - NO formal trousers, suits, heavy fabrics, thick denim or formal shoes
@@ -944,6 +982,35 @@ WOMEN'S FESTIVAL RULES:
   - Curvy: high waisted denim shorts with a fitted top. Wrap skirts. Practical but flattering
   - Standard: denim shorts, crop top, midi skirt with a band tee — all classic festival looks
 - Denim shorts, mini skirts, crop tops, band tees, festival boots, wellies, trainers, co-ord sets, lightweight layers`,
+
+    'w-christmas-party': `
+WOMEN'S CHRISTMAS / NYE PARTY RULES:
+- This is a women's styling guide — all advice must be relevant to women's fashion
+- occasionDetail is the type of event — office party needs to stay professional even if festive, family gathering can be more relaxed but still put-together, NYE night out is the most dressed-up, casual drinks with friends is the most relaxed
+- occasionDetail2 is the dress code — black tie or strict formal means a full formal gown or dressy jumpsuit; festive theme means genuinely leaning into sequins, colour or a statement piece; smart casual expected means elevated separates or a dress; no dress code means personal style leads but still put-together, not sloppy
+- Sequins, velvet, jewel tones and metallics are all genuinely appropriate here in a way they would not be for most other occasions — encourage embracing them within the stated style preference
+- Body shape guidance:
+  - Petite: fitted silhouettes and one strong colour keep proportions long — avoid anything oversized or heavily layered
+  - Tall: can carry maxi lengths and bold statement pieces beautifully
+  - Curvy: wrap styles and structured pieces that define the waist work well with sequin or metallic fabrics
+  - Standard: most silhouettes work — lead with the occasionDetail2 formality level
+- Dresses, jumpsuits, skirts with statement tops, heels — avoid anything too casual unless occasionDetail2 explicitly says no dress code
+- Season is always Winter for this occasion regardless of when the guide is generated — heavier fabrics, real outerwear`,
+
+    'w-cosy-weekend': `
+WOMEN'S COSY WEEKEND RULES:
+- This is a women's styling guide — all advice must be relevant to women's fashion
+- occasionDetail is the activity — errands need something quick and practical, outdoor activity needs real warmth, seeing friends or family is relaxed but still put-together, a day moving between indoors and out needs genuine layering flexibility
+- occasionDetail2 is duration — a quick trip can get away with less, half a day and especially all day need pieces that stay warm and comfortable throughout
+- LAYERING is the entire point of this occasion, not an afterthought — a proper coat, a jumper or knit mid-layer, and a base layer that adapts as temperature changes between indoors and out
+- Body shape guidance:
+  - Petite: knee-length or shorter coats avoid overwhelming the frame — belted styles create shape
+  - Tall: can carry longer maxi coats and oversized knits beautifully
+  - Curvy: wrap coats and belted styles define the waist under bulkier winter layers
+  - Standard: most coat lengths and knit styles work — focus on genuine warmth first
+- Trainers or boots are both fine depending on style preference — this occasion does NOT carry the "no trainers" restriction that formal occasions do
+- Jeans, cosy knits, coats, boots, scarves — practical and considered, not just decorative
+- Season is always Winter for this occasion regardless of when the guide is generated`,
   };
 
   const rules = occasionRules[occasionData.occasion] || '';
@@ -957,7 +1024,7 @@ OCCASION DETAIL 2 (Q4): ${occasionData.occasionDetail2 || 'Not specified'}
 BUDGET PER ITEM: ${occasionData.budget}
 ${isWomens ? 'BODY SHAPE' : 'BUILD'}: ${occasionData.fit}
 STYLE PREFERENCE: ${occasionData.style}
-CURRENT SEASON: ${getCurrentSeason()} — this is genuinely today's season in the UK. Use it to keep fabric weight and layering realistic. Someone taking this quiz right now needs an outfit for THIS time of year unless the occasion type itself implies otherwise (e.g. Summer Holiday, Festival)
+CURRENT SEASON: ${getEffectiveSeason(occasionData.occasion)} — this is genuinely today's season in the UK (or, for occasions that are always one season regardless of calendar date, the season that occasion actually requires). Use it to keep fabric weight and layering realistic. Someone taking this quiz right now needs an outfit for THIS time of year unless the occasion type itself implies otherwise (e.g. Summer Holiday, Festival, Christmas Party, Cold Weather Casual)
 GENDER: ${isWomens ? 'Women\'s guide — all product picks and styling advice must be for women' : 'Men\'s guide — all product picks and styling advice must be for men'}
 
 ${rules}
@@ -1488,7 +1555,10 @@ async function buildOccasionPDF(content, occasionData, products) {
   // blazer-driven, so they're deliberately NOT included here — this
   // fallback would wrongly nudge someone who correctly got a dress
   // toward "go find a jacket" when they don't need one.
-  const JACKET_OCCASIONS = ['date-night', 'job-interview', 'wedding-guest', 'night-out', 'smart-casual-work', 'w-job-interview'];
+  // Christmas Party and Cold Weather Casual/Cosy Weekend are added for
+  // both genders — a jacket/coat isn't just a styling nice-to-have on
+  // these, it's the actual point of the occasion.
+  const JACKET_OCCASIONS = ['date-night', 'job-interview', 'wedding-guest', 'night-out', 'smart-casual-work', 'w-job-interview', 'christmas-party', 'cold-weather-casual', 'w-christmas-party', 'w-cosy-weekend'];
   const jacketRequired = JACKET_OCCASIONS.includes(occasionData.occasion);
   const pickedCategories = new Set((content.recommendedPieces || []).map(p => (p.category || '').toLowerCase()));
   const hasTop     = [...pickedCategories].some(c => c === 'top');
@@ -1538,6 +1608,10 @@ async function buildOccasionPDF(content, occasionData, products) {
           ? 'Chelsea boots, clean leather trainers or smart loafers'
           : ['festival','summer-holiday'].includes(occasionData.occasion)
           ? 'canvas shoes, clean trainers or sandals'
+          : ['christmas-party'].includes(occasionData.occasion)
+          ? 'leather Chelsea boots, smart loafers or clean minimal trainers depending on how dressed up the event is'
+          : ['cold-weather-casual'].includes(occasionData.occasion)
+          ? 'weatherproof boots or warm-lined trainers that can genuinely handle the cold and wet'
           : ['w-date-night','w-wedding-guest','w-job-interview'].includes(occasionData.occasion)
           ? 'heels, block heels or smart flats depending on comfort and how much you\'re on your feet'
           : ['w-girls-night-out'].includes(occasionData.occasion)
@@ -1546,17 +1620,29 @@ async function buildOccasionPDF(content, occasionData, products) {
           ? 'casual trainers, loafers or flat sandals'
           : ['w-summer-holiday','w-festival'].includes(occasionData.occasion)
           ? 'sandals, espadrilles or festival boots depending on the setting'
+          : ['w-christmas-party'].includes(occasionData.occasion)
+          ? 'heels, embellished flats or ankle boots depending on how dressed up the event is'
+          : ['w-cosy-weekend'].includes(occasionData.occasion)
+          ? 'weatherproof boots or warm-lined trainers/flats that can genuinely handle the cold and wet'
           : 'clean smart shoes suited to the occasion'
       }. Avoid anything overly casual or worn-looking.`,
     });
   }
 
   if (jacketRequired && !hasJacket) {
-    const isWomensJacketOccasion = occasionData.occasion === 'w-job-interview';
+    const isWomensJacketOccasion = occasionData.occasion.startsWith('w-');
     completeYourLook.push({
-      category: 'Jacket / Layer',
+      category: occasionData.occasion === 'cold-weather-casual' || occasionData.occasion === 'w-cosy-weekend' ? 'Coat / Jacket' : 'Jacket / Layer',
       guidance: `A jacket layer is the difference between looking nice and looking considered for ${occasionData.occasionName}. Look for ${
-        isWomensJacketOccasion
+        occasionData.occasion === 'christmas-party'
+          ? 'an unstructured blazer or smart jacket with some festive edge — velvet, dark jewel tones or a subtle texture work well for a party setting'
+          : occasionData.occasion === 'w-christmas-party'
+          ? 'a structured blazer or statement jacket in a rich colour or metallic — this is one occasion where a bit of sparkle on the outer layer works'
+          : occasionData.occasion === 'cold-weather-casual'
+          ? 'a proper coat or warm jacket — wool, quilted or shearling-style — genuinely built for warmth, not just for show'
+          : occasionData.occasion === 'w-cosy-weekend'
+          ? 'a proper coat — wool, quilted or shearling-style — genuinely built for warmth, with a length and shape that suits your build'
+          : isWomensJacketOccasion
           ? 'a structured blazer in navy, charcoal or black — single breasted, tailored or slightly relaxed fit depending on your shape'
           : ['job-interview','wedding-guest'].includes(occasionData.occasion)
           ? 'an unstructured blazer in navy or charcoal — single breasted, slim or regular fit'
