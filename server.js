@@ -149,24 +149,16 @@ function incrementGuideCount(email) {
   return record;
 }
 
-// ── FREE-GUIDE IN-FLIGHT LOCK (FIX 6) ─────────────────────────────────────────
-// freeUsed is only written AFTER generation finishes (60-90s later), so two
-// rapid submissions from the same email both passed the !freeUsed check and
-// both got a free guide. This reserves the slot at request time instead, and
-// releases it if generation fails so a genuine error never burns the credit.
-
-const pendingFreeGuides = new Set();
-
-function reserveFreeGuide(email) {
-  const key = emailKey(email);
-  if (pendingFreeGuides.has(key)) return false;
-  pendingFreeGuides.add(key);
-  return true;
-}
-
-function releaseFreeGuide(email) {
-  pendingFreeGuides.delete(emailKey(email));
-}
+// Note: an earlier version of this fix used an in-memory Set as a lock
+// (reserveFreeGuide/releaseFreeGuide). That only protects against two
+// requests overlapping on the SAME running process — it has zero memory
+// across a redeploy. Test evidence: generate guide A, redeploy, generate
+// guide B on the same email — B's process has never heard of A, sees
+// freeUsed=false, and grants a second free guide even though A already
+// correctly wrote freeUsed=true to disk. Replaced below with a disk-based
+// reservation that's written synchronously before generation starts, so it
+// survives restarts and blocks concurrent requests regardless of which
+// process handles them.
 
 // ── FETCH PRODUCTS (v2) ───────────────────────────────────────────────────────
 
@@ -395,24 +387,32 @@ app.post('/api/create-occasion-checkout', async (req, res) => {
   }
 
   // ── PATH 2: First guide ever for this email — free, no payment ──
-  // FIX 6: reserve the free slot synchronously before responding. Previously
-  // freeUsed was only written after generation completed (60-90s later), so
-  // two fast submissions from the same email both passed this check.
-  if (!user.freeUsed && reserveFreeGuide(email)) {
+  // Reservation happens on disk, synchronously, before generation starts —
+  // not after it succeeds. That's the fix for the redeploy/overlap bug: an
+  // in-memory-only lock forgets everything on restart, so a second request
+  // hitting a fresh process after a redeploy had no way to know a first
+  // request was ever in flight. Writing freeUsed=true immediately means ANY
+  // process checking this email — old, new, or a genuinely concurrent
+  // request — sees it as used right away. If generation then actually
+  // fails, the catch block below reverts it, so a real failure still
+  // doesn't cost the customer their free credit.
+  if (!user.freeUsed) {
+    saveUserRecord(email, { ...user, freeUsed: true });
+
     const sessionId = crypto.randomBytes(16).toString('hex');
     saveFreeSession(`occ_${sessionId}`, { ...occasionData, createdAt: Date.now() });
     res.json({ free: true, sessionId });
 
     generateOccasionReport(sessionId, occasionData, email, { isFree: true })
       .then(() => {
-        // Only mark the free guide as used once it's actually been delivered —
-        // a failed generation (e.g. a server error) should never burn the
-        // customer's free guide with nothing to show for it
-        saveUserRecord(email, { ...getUserRecord(email), freeUsed: true });
         incrementGuideCount(email);
       })
-      .catch(err => console.error(`Free-tier report failed ${sessionId}:`, err))
-      .finally(() => releaseFreeGuide(email));
+      .catch(err => {
+        console.error(`Free-tier report failed ${sessionId}:`, err);
+        // Roll back the reservation — a genuine generation failure must not
+        // burn the customer's one free guide with nothing to show for it
+        saveUserRecord(email, { ...getUserRecord(email), freeUsed: false });
+      });
     return;
   }
 
