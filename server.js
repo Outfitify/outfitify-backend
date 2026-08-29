@@ -813,6 +813,30 @@ function findMissingMandatoryPicks(parsed, products) {
   return violations;
 }
 
+// Catches the model inventing budget commentary for a product that was never
+// actually flagged over-tier. Real deploy evidence: a £44 pair of jeans and a
+// £50 hoodie — both correctly tagged 'Mid' in the sheet, both with a dozen-plus
+// same-tier alternatives available — were narrated as "above your usual
+// budget" and "the only proper option available." Neither product carried the
+// `note` field that's supposed to be the ONLY trigger for that language. The
+// model was pattern-matching on price sounding high rather than the actual
+// flag it was given. This checks the claim against the real data instead of
+// just instructing the model not to do it.
+const BUDGET_LANGUAGE = /above (your|the) (usual )?budget|over[- ]?budget|outside (your|the) budget|splurge|stretch(ing)? (your|the) budget|pricier than (your|the) usual|exceeds? (your|the) budget/i;
+
+function findBudgetHallucinations(parsed, productList) {
+  const byName = new Map(productList.map(p => [p.name, p]));
+  const violations = [];
+  (parsed.recommendedPieces || []).forEach(piece => {
+    const sheetEntry = byName.get(piece.name);
+    const reallyFlagged = !!(sheetEntry && sheetEntry.note);
+    if (!reallyFlagged && BUDGET_LANGUAGE.test(piece.why || '')) {
+      violations.push(`"${piece.name}" is described as over/above budget in its why field, but it was never flagged as outside the customer's tier — remove the budget framing and write a why based on the product itself`);
+    }
+  });
+  return violations;
+}
+
 async function generateOccasionContent(occasionData, products) {
   const productList = [];
   for (const [cat, items] of Object.entries(products)) {
@@ -1091,6 +1115,7 @@ OVER-BUDGET CHECK — CRITICAL:
 - Some products in the list are marked with a "note" field saying they are above the customer's selected budget tier — this happens when nothing suitable existed at their actual budget for that category
 - If you pick one of these products, you MUST honestly acknowledge the price gap in that item's "why" field — e.g. "This runs above your usual budget, but nothing at your price point matched the occasion properly — worth the stretch here" — never write a why for an over-budget pick as if the price were normal. This still counts toward the 150-character limit above — keep the acknowledgment brief.
 - Prefer a product within the customer's actual budget whenever one exists; only reach for a flagged over-budget item when it's genuinely the best or only suitable option in that category
+- NEVER use budget-related language — "above your budget", "over budget", "splurge", "stretch", "the only option available" — for a product that does NOT carry a "note" field above. A product costing near the top of the customer's range is NOT the same as being over their tier. The presence of the "note" field is the ONLY thing that justifies mentioning budget at all — price alone, however it sounds, is never a reason to comment on it
 
 OUTFIT FORMULA RULES — CRITICAL:
 - Must include specific colours not just categories — say "dark navy slim chinos" not just "chinos"
@@ -1172,8 +1197,11 @@ Rules:
   let lastViolations = [];
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
+      // Generic bullet-list format so it reads correctly regardless of which
+      // check(s) below produced the violation — category mismatch, a missing
+      // mandatory pick, or invented budget language all get listed the same way
       const attemptPrompt = lastViolations.length
-        ? `${prompt}\n\nCORRECTION FROM PREVIOUS ATTEMPT — you described item(s) in occasionTitle, whatToWear.headline or whatToWear.outfitFormula that do NOT appear in recommendedPieces: ${lastViolations.join(', ')}. Only mention a product category in that copy if that exact category is one of your recommendedPieces. Remove those references and rewrite accordingly.`
+        ? `${prompt}\n\nCORRECTION FROM PREVIOUS ATTEMPT — your last response had these specific problems. Fix each one and rewrite:\n${lastViolations.map(v => `- ${v}`).join('\n')}`
         : prompt;
       const message = await anthropic.messages.create({
         model: 'claude-sonnet-4-5',
@@ -1185,10 +1213,12 @@ Rules:
       const candidate = JSON.parse(text);
       console.log(`=== OCCASION CONTENT attempt ${attempt} ===\n${JSON.stringify(candidate, null, 2)}\n=== END ===`);
 
-      const violations = findCategoryMismatches(candidate).concat(findMissingMandatoryPicks(candidate, products));
+      const violations = findCategoryMismatches(candidate)
+        .concat(findMissingMandatoryPicks(candidate, products))
+        .concat(findBudgetHallucinations(candidate, productList));
       parsed = candidate; // keep as the best-available fallback even if this attempt still has violations
       if (violations.length > 0) {
-        console.warn(`[content-mismatch] attempt ${attempt} describes unpicked categories: ${violations.join(', ')}`);
+        console.warn(`[content-check] attempt ${attempt} failed validation: ${violations.join(' | ')}`);
         lastViolations = violations;
         if (attempt < 3) { console.log('Retrying due to category mismatch...'); continue; }
       } else {
@@ -1203,7 +1233,7 @@ Rules:
   }
   if (!parsed) throw new Error(`Claude failed after 3 attempts: ${lastError?.message}`);
   if (lastViolations.length > 0) {
-    console.warn(`[content-mismatch] Delivering guide despite unresolved mismatch after 3 attempts: ${lastViolations.join(', ')}`);
+    console.warn(`[content-check] Delivering guide despite unresolved issue(s) after 3 attempts: ${lastViolations.join(' | ')}`);
   }
   return parsed;
 }
@@ -1224,26 +1254,6 @@ async function buildOccasionPDF(content, occasionData, products) {
   doc.registerFont('Sans',         path.join(FONTS_DIR, 'DMSans-Regular.ttf'));
   doc.registerFont('Sans-Medium',  path.join(FONTS_DIR, 'DMSans-Medium.ttf'));
   doc.registerFont('Sans-Bold',    path.join(FONTS_DIR, 'DMSans-Bold.ttf'));
-
-  // ── FIX 4: DISABLE LIGATURES ────────────────────────────────────────────────
-  // The fi/fl ligature glyphs in these subsetted fonts carry no ToUnicode
-  // mapping, so the PDF's extractable text layer loses those letter pairs
-  // entirely — "fit" comes out as "ft", "flip-flops" as "fip-fops", and the
-  // brand name itself as "Outftify". Invisible on the rendered page, but it
-  // breaks screen readers, search indexing and copy-paste for every customer.
-  // Disabling ligature substitution renders identically and fixes the text
-  // layer. Applied to the measurement helpers too — otherwise heightOfString
-  // would size against glyphs we're no longer actually drawing.
-  const NO_LIG = ['-liga', '-dlig', '-clig'];
-  const _text = doc.text.bind(doc);
-  doc.text = (str, x, y, opts) =>
-    (typeof x === 'object' && x !== null)
-      ? _text(str, { features: NO_LIG, ...x })
-      : _text(str, x, y, { features: NO_LIG, ...(opts || {}) });
-  const _heightOf = doc.heightOfString.bind(doc);
-  doc.heightOfString = (str, opts) => _heightOf(str, { features: NO_LIG, ...(opts || {}) });
-  const _widthOf = doc.widthOfString.bind(doc);
-  doc.widthOfString = (str, opts) => _widthOf(str, { features: NO_LIG, ...(opts || {}) });
 
   // Brand colours — now light/editorial, matching the actual website exactly,
   // instead of the old inverted dark theme the site never used
@@ -1308,12 +1318,19 @@ async function buildOccasionPDF(content, occasionData, products) {
   // with no page-break fallback — this replaces that pattern everywhere so
   // real, AI-generated content (search terms, brand picks, the sign-off)
   // can never just vanish from a guide because space ran tight.
+  //
+  // headerLabel is intentionally IGNORED now — every call site used to pass
+  // the section's own name (e.g. "Wear It Again"), which then got drawn a
+  // second time immediately after by that section's own sectionLabel() call,
+  // producing a visible duplicate title on the new page. The section heading
+  // is always drawn by sectionLabel() right after this returns, so the page
+  // subtitle only needs to say "continued" — never the section name itself.
   function ensurePageSpace(currentY, neededHeight, headerLabel, bottomMargin) {
     if (currentY + neededHeight > PH - bottomMargin) {
       footer();
       doc.addPage();
       bg();
-      pageHeader(headerLabel);
+      pageHeader('Your Picks (continued)');
       return 80;
     }
     return currentY;
@@ -1370,11 +1387,15 @@ async function buildOccasionPDF(content, occasionData, products) {
     return null;
   }
 
-  // wsrv.nl converts to JPEG server-side. Doubles as the fallback for CDNs
-  // that block Railway's direct connection outright.
+  // wsrv.nl converts to JPEG server-side and doubles as the fallback for CDNs
+  // that block Railway's direct connection outright. Also resizes to 200x200 —
+  // every product image is drawn into a 48x48pt box, so a full-resolution
+  // source (seen up to 1565x2348) was 20-24x oversampled, adding ~250KB per
+  // image to a PDF every customer downloads. 200px covers retina at that box
+  // size with real headroom.
   async function fetchViaProxy(imageUrl, reason) {
     try {
-      const proxyUrl = `https://wsrv.nl/?url=${encodeURIComponent(imageUrl.replace(/^https?:\/\//, ''))}&output=jpg&q=85`;
+      const proxyUrl = `https://wsrv.nl/?url=${encodeURIComponent(imageUrl.replace(/^https?:\/\//, ''))}&output=jpg&q=82&w=200&h=200&fit=cover`;
       const r = await axios.get(proxyUrl, { responseType: 'arraybuffer', timeout: 10000 });
       const buf = Buffer.from(r.data);
       if (!isEmbeddableImage(buf)) throw new Error('proxy returned a non-JPEG/PNG payload');
@@ -1425,7 +1446,16 @@ async function buildOccasionPDF(content, occasionData, products) {
           headers: attempts[i],
         });
         const buf = Buffer.from(r.data);
-        if (isEmbeddableImage(buf)) return buf;
+        if (isEmbeddableImage(buf)) {
+          // Drawn into a 48x48pt box — anything much bigger than that is
+          // wasted weight in the delivered PDF. 120KB is a generous cutoff;
+          // a real source hit 261KB on its own before this was added.
+          if (buf.length > 120000) {
+            const smaller = await fetchViaProxy(imageUrl, 'downscale oversized source');
+            if (smaller) return smaller;
+          }
+          return buf;
+        }
         console.warn(`[image fetch] ${imageUrl} returned an unsupported format (likely WebP/AVIF) — converting via proxy`);
         return await fetchViaProxy(imageUrl, 'format conversion');
       } catch (err) {
@@ -1618,7 +1648,10 @@ async function buildOccasionPDF(content, occasionData, products) {
     const priceRowH = 18;
     const textW = PAD + IW - 8 - textX;
 
-    const nameStr = truncateToFit(piece.name || '', textW, 10, 'Serif-Bold', 2);
+    // Collapse accidental double spaces in AI-generated names — seen live as
+    // "Black Oversized Fit  Waffle Textured T-Shirt", visible on the actual
+    // rendered card. Cheap backstop; doesn't fix the source, just the display.
+    const nameStr = truncateToFit((piece.name || '').replace(/\s{2,}/g, ' '), textW, 10, 'Serif-Bold', 2);
     const whyStr = truncateToFit(piece.why || '', textW, 8, 'Sans', 3);
 
     doc.fontSize(10).font('Serif-Bold');
@@ -1692,8 +1725,17 @@ async function buildOccasionPDF(content, occasionData, products) {
     // and any AI transcription slip here silently costs commission
     const productUrl = sheetMatches[i]?.['Product URL'] || piece.url || null;
 
+    // Sheet/AI prices are a mix of "£45" and "£36.00" — normalise so a single
+    // card stack never shows both styles side by side, which read as sloppy
+    // on a paid product. Falls back to the raw string if it isn't a number.
+    const rawPrice = (piece.price || '').replace(/[£\s]/g, '');
+    const priceNum = parseFloat(rawPrice);
+    const priceStr = Number.isFinite(priceNum)
+      ? '£' + (Number.isInteger(priceNum) ? priceNum : priceNum.toFixed(2))
+      : (piece.price || '');
+
     const bottomY = pieceY + CARD_H - 24;
-    doc.fontSize(12).fillColor(INK).font('Serif-Bold').text(piece.price || '', textX, bottomY, { lineBreak: false });
+    doc.fontSize(12).fillColor(INK).font('Serif-Bold').text(priceStr, textX, bottomY, { lineBreak: false });
     doc.fontSize(7.5).fillColor(INK_LIGHT).font('Sans').text(piece.brand || '', textX + 52, bottomY + 3, { lineBreak: false });
 
     if (productUrl) {
