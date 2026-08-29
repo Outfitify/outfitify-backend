@@ -162,7 +162,7 @@ function incrementGuideCount(email) {
 
 // ── FETCH PRODUCTS (v2) ───────────────────────────────────────────────────────
 
-async function fetchOccasionProducts(occasion, budget, fit, gender = 'mens') {
+async function fetchOccasionProducts(occasion, budget, fit, gender = 'mens', style = '') {
   const auth = new google.auth.GoogleAuth({
     credentials: JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON),
     scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
@@ -264,6 +264,51 @@ async function fetchOccasionProducts(occasion, budget, fit, gender = 'mens') {
     return raw.split(',').map(s => s.trim().toLowerCase()).some(s => s === target.toLowerCase());
   }
 
+  // ── STYLE MATCHING ──────────────────────────────────────────────────────────
+  // The quiz asks a style question (q5) whose wording is unique per occasion —
+  // 72 occasion/option pairs, 68 distinct strings, e.g. "Clean and put-together
+  // — smart, minimal, considered" for date-night vs "Clean and minimal — simple
+  // fits, neutral tones" for summer-holiday. Tagging products against 68 exact
+  // strings would be unmaintainable, so the quiz's descriptive answers are
+  // collapsed here onto a small shared vocabulary that the sheet's Style column
+  // actually uses: Minimal, Smart, Relaxed, Statement, Streetwear.
+  //
+  // Note the raw quiz answer is still passed verbatim to the AI prompt, so the
+  // nuance ("smart but with some personality") is never lost — this mapping
+  // only decides which products make the shortlist.
+  const STYLE_RULES = [
+    ['Streetwear', ['streetwear', 'hype', 'graphic', 'fresh trainers']],
+    ['Smart',      ['polished', 'formal', 'classic', 'sharp', 'professional', 'dressed up',
+                    'resort-smart', 'resort chic', 'city chic', 'elegant', 'romantic',
+                    'put-together and', 'creative']],
+    ['Statement',  ['bold', 'statement', 'glam', 'fashion-forward', 'fashion girl', 'playful',
+                    'celebratory', 'turn heads', 'sequins', 'trendy', 'dress up']],
+    ['Relaxed',    ['relaxed', 'casual', 'cosy', 'comfort', 'effortless', 'easy', 'boho',
+                    'practical', 'layered', 'cute', 'wearable']],
+    ['Minimal',    ['minimal', 'clean', 'understated', 'safe', 'simple', 'neutral',
+                    'quietly', 'feminine']],
+  ];
+
+  function styleToTag(answer) {
+    const low = (answer || '').toLowerCase();
+    if (!low) return null;
+    for (const [tag, keywords] of STYLE_RULES) {
+      if (keywords.some(k => low.includes(k))) return tag;
+    }
+    return null; // unrecognised answer — treated as "no style filter"
+  }
+
+  // Blank Style or "All" = style-neutral basic, always matches. Comma-separated
+  // like Occasion and Season, so one product can carry several style tags.
+  function matchesStyle(product, target) {
+    if (!target) return true;
+    const raw = (product['Style'] || '').trim();
+    if (!raw) return true;
+    return raw.split(',')
+      .map(s => s.trim().toLowerCase())
+      .some(s => s === 'all' || s === target.toLowerCase());
+  }
+
   const BUDGET_ORDER = ['Budget', 'Mid', 'Premium'];
   function budgetCascade(pool, tier) {
     const idx = BUDGET_ORDER.indexOf(tier);
@@ -291,21 +336,32 @@ async function fetchOccasionProducts(occasion, budget, fit, gender = 'mens') {
   const selected = {};
 
   const currentSeason = getEffectiveSeason(occasion);
-  console.log(`[fetchOccasionProducts] currentSeason=${currentSeason}`);
+  const styleTag = styleToTag(style);
+  console.log(`[fetchOccasionProducts] currentSeason=${currentSeason} styleAnswer="${style}" -> styleTag=${styleTag || 'none (no style filter)'}`);
 
   // Season-filtered first, same cascade philosophy as budget: prefer a
   // seasonally-correct match, but never leave a category empty if the
-  // sheet is thin on season-tagged stock for it
+  // sheet is thin on season-tagged stock for it.
+  //
+  // Style sits as the MOST specific layer and is therefore the first thing
+  // dropped. That's deliberate: while the Style column is only partly filled
+  // in (or if a style answer doesn't map), this cascade degrades to exactly
+  // the previous occasion/fit/season behaviour rather than starving a
+  // category. It gets stricter automatically as the column gets tagged.
+  const occasionFitSeasonStylePool = allProducts.filter(p =>
+    matchesOccasion(p, occasion) && matchesFit(p, fitTier) && matchesSeason(p, currentSeason) && matchesStyle(p, styleTag));
   const occasionFitSeasonPool = allProducts.filter(p => matchesOccasion(p, occasion) && matchesFit(p, fitTier) && matchesSeason(p, currentSeason));
   const occasionFitPool  = allProducts.filter(p => matchesOccasion(p, occasion) && matchesFit(p, fitTier));
   const occasionOnlyPool = allProducts.filter(p => matchesOccasion(p, occasion));
 
   CATEGORIES.forEach(cat => {
-    // Prefer season+occasion+fit match first; fall back progressively,
-    // dropping the season filter before dropping fit, and fit before occasion
-    let pool = occasionFitSeasonPool.filter(p => p['Category'] === cat);
-    if (pool.length < 2) pool = occasionFitPool.filter(p => p['Category'] === cat);
-    if (pool.length < 2) pool = occasionOnlyPool.filter(p => p['Category'] === cat);
+    // Prefer style+season+occasion+fit; fall back progressively, dropping
+    // style first, then season, then fit — occasion is never dropped
+    let matchLevel = 'occasion+fit+season+style';
+    let pool = occasionFitSeasonStylePool.filter(p => p['Category'] === cat);
+    if (pool.length < 2) { pool = occasionFitSeasonPool.filter(p => p['Category'] === cat); matchLevel = 'occasion+fit+season (style dropped)'; }
+    if (pool.length < 2) { pool = occasionFitPool.filter(p => p['Category'] === cat); matchLevel = 'occasion+fit (season dropped)'; }
+    if (pool.length < 2) { pool = occasionOnlyPool.filter(p => p['Category'] === cat); matchLevel = 'occasion only'; }
 
     // Audited against the live sheet: Jacket, Hoodie/Jacket and Shoes have
     // ZERO Budget-tagged products for cold-weather-casual, christmas-party
@@ -331,7 +387,7 @@ async function fetchOccasionProducts(occasion, budget, fit, gender = 'mens') {
 
     const budgeted = budgetCascade(pool, effectiveTier);
     selected[cat] = budgeted.sort(() => Math.random() - 0.5).slice(0, 6);
-    console.log(`[fetchOccasionProducts] ${cat}: ${selected[cat].length} products`);
+    console.log(`[fetchOccasionProducts] ${cat}: ${selected[cat].length} products [matched on: ${matchLevel}]`);
   });
 
   return selected;
@@ -693,7 +749,7 @@ async function generateOccasionReport(sessionId, occasionData, userEmail, option
   console.log(`Generating occasion report: ${occasionData.occasion} session=${sessionId} isFree=${isFree} (active=${activeJobs})`);
   try {
     const gender = occasionData.gender || genderFromOccasion(occasionData.occasion);
-    const products = await fetchOccasionProducts(occasionData.occasion, occasionData.budget, occasionData.fit, gender);
+    const products = await fetchOccasionProducts(occasionData.occasion, occasionData.budget, occasionData.fit, gender, occasionData.style);
     const reportContent = await generateOccasionContent(occasionData, products);
     const pdfPath = await buildOccasionPDF(reportContent, occasionData, products);
     const token = crypto.randomBytes(32).toString('hex');
@@ -750,7 +806,7 @@ async function generateBundleReports(sessionId, bundleData, userEmail) {
     try {
       console.log(`Bundle: generating ${occ.name} (budget=${occ.budget}, fit=${occ.fit})...`);
       const gender = occ.gender || genderFromOccasion(occ.slug);
-      const products = await fetchOccasionProducts(occ.slug, occ.budget, occ.fit, gender);
+      const products = await fetchOccasionProducts(occ.slug, occ.budget, occ.fit, gender, occ.style);
       const reportContent = await generateOccasionContent(occasionData, products);
       const pdfPath = await buildOccasionPDF(reportContent, occasionData, products);
       const token = crypto.randomBytes(32).toString('hex');
