@@ -139,6 +139,25 @@ function incrementGuideCount(email) {
   return record;
 }
 
+// ── FREE-GUIDE IN-FLIGHT LOCK (FIX 6) ─────────────────────────────────────────
+// freeUsed is only written AFTER generation finishes (60-90s later), so two
+// rapid submissions from the same email both passed the !freeUsed check and
+// both got a free guide. This reserves the slot at request time instead, and
+// releases it if generation fails so a genuine error never burns the credit.
+
+const pendingFreeGuides = new Set();
+
+function reserveFreeGuide(email) {
+  const key = emailKey(email);
+  if (pendingFreeGuides.has(key)) return false;
+  pendingFreeGuides.add(key);
+  return true;
+}
+
+function releaseFreeGuide(email) {
+  pendingFreeGuides.delete(emailKey(email));
+}
+
 // ── FETCH PRODUCTS (v2) ───────────────────────────────────────────────────────
 
 async function fetchOccasionProducts(occasion, budget, fit, gender = 'mens') {
@@ -152,7 +171,11 @@ async function fetchOccasionProducts(occasion, budget, fit, gender = 'mens') {
     : process.env.GOOGLE_SHEET_ID;
   const response = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: gender === 'womens' ? 'Womens!A:J' : 'Mens!A:J',
+    // FIX 5: was 'A:J' — exactly 10 columns. Inserting the Priority column
+    // anywhere left of Image URL would push Image URL out to K and silently
+    // drop EVERY product image from EVERY guide with no error at all.
+    // A:Z gives headroom for Priority and anything else added later.
+    range: gender === 'womens' ? 'Womens!A:Z' : 'Mens!A:Z',
   });
 
   const rows = response.data.values;
@@ -340,7 +363,10 @@ app.post('/api/create-occasion-checkout', async (req, res) => {
   }
 
   // ── PATH 2: First guide ever for this email — free, no payment ──
-  if (!user.freeUsed) {
+  // FIX 6: reserve the free slot synchronously before responding. Previously
+  // freeUsed was only written after generation completed (60-90s later), so
+  // two fast submissions from the same email both passed this check.
+  if (!user.freeUsed && reserveFreeGuide(email)) {
     const sessionId = crypto.randomBytes(16).toString('hex');
     saveFreeSession(`occ_${sessionId}`, { ...occasionData, createdAt: Date.now() });
     res.json({ free: true, sessionId });
@@ -353,7 +379,8 @@ app.post('/api/create-occasion-checkout', async (req, res) => {
         saveUserRecord(email, { ...getUserRecord(email), freeUsed: true });
         incrementGuideCount(email);
       })
-      .catch(err => console.error(`Free-tier report failed ${sessionId}:`, err));
+      .catch(err => console.error(`Free-tier report failed ${sessionId}:`, err))
+      .finally(() => releaseFreeGuide(email));
     return;
   }
 
@@ -644,6 +671,10 @@ async function generateOccasionReport(sessionId, occasionData, userEmail, option
     console.log(`Occasion report ready: ${sessionId}`);
   } catch (err) {
     console.error(`Occasion report failed ${sessionId}:`, err);
+    // Rethrow so the caller's .catch/.finally run — the free-guide reservation
+    // must be released on failure, and a swallowed error here previously made
+    // a failed free guide look identical to a successful one
+    throw err;
   } finally {
     activeJobs--;
     console.log(`Job done ${sessionId}. Active: ${activeJobs}`);
@@ -1194,6 +1225,26 @@ async function buildOccasionPDF(content, occasionData, products) {
   doc.registerFont('Sans-Medium',  path.join(FONTS_DIR, 'DMSans-Medium.ttf'));
   doc.registerFont('Sans-Bold',    path.join(FONTS_DIR, 'DMSans-Bold.ttf'));
 
+  // ── FIX 4: DISABLE LIGATURES ────────────────────────────────────────────────
+  // The fi/fl ligature glyphs in these subsetted fonts carry no ToUnicode
+  // mapping, so the PDF's extractable text layer loses those letter pairs
+  // entirely — "fit" comes out as "ft", "flip-flops" as "fip-fops", and the
+  // brand name itself as "Outftify". Invisible on the rendered page, but it
+  // breaks screen readers, search indexing and copy-paste for every customer.
+  // Disabling ligature substitution renders identically and fixes the text
+  // layer. Applied to the measurement helpers too — otherwise heightOfString
+  // would size against glyphs we're no longer actually drawing.
+  const NO_LIG = ['-liga', '-dlig', '-clig'];
+  const _text = doc.text.bind(doc);
+  doc.text = (str, x, y, opts) =>
+    (typeof x === 'object' && x !== null)
+      ? _text(str, { features: NO_LIG, ...x })
+      : _text(str, x, y, { features: NO_LIG, ...(opts || {}) });
+  const _heightOf = doc.heightOfString.bind(doc);
+  doc.heightOfString = (str, opts) => _heightOf(str, { features: NO_LIG, ...(opts || {}) });
+  const _widthOf = doc.widthOfString.bind(doc);
+  doc.widthOfString = (str, opts) => _widthOf(str, { features: NO_LIG, ...(opts || {}) });
+
   // Brand colours — now light/editorial, matching the actual website exactly,
   // instead of the old inverted dark theme the site never used
   const isWomens = occasionData.gender === 'womens';
@@ -1286,53 +1337,139 @@ async function buildOccasionPDF(content, occasionData, products) {
       .text(label, x, y + (h - 10) / 2, { width: w, align: 'center' });
   }
 
-  // Generic per-domain image fetch — fixes the bug where images were hardcoded
-  // to always claim they came from Zara (Referer: 'https://www.zara.com/'),
-  // which silently broke images from every other retailer in your sheet.
-  // This derives the referer from each image's own domain instead.
+  // ── FIX 1: PRODUCT IMAGE FETCHING ───────────────────────────────────────────
+  // ROOT CAUSE of the grey placeholder boxes: PDFKit can ONLY embed JPEG and
+  // PNG. The old Accept header explicitly requested AVIF and WebP FIRST, so
+  // every content-negotiating CDN (Shopify, Scene7 and most modern retail
+  // image hosts) happily returned WebP. Those images downloaded perfectly —
+  // then threw inside doc.image(), got swallowed by the render loop's catch,
+  // and drew a grey box. ASOS's CDN ignores the header and serves JPEG, which
+  // is exactly why ASOS was the only image that ever appeared.
   //
-  // A prior version of this function tried a second attempt with no Referer
-  // header, on the theory that ASOS's media CDN might be blocking a
-  // mismatched Referer. Real deploy logs disproved that: both the
-  // domain-Referer attempt AND the no-Referer attempt failed identically
-  // with "timeout of 5000ms exceeded" — meaning it was never a header/
-  // blocking issue at all, just the CDN not responding within 5 seconds.
-  // A follow-up fix increased the timeout to 8000ms with a same-request
-  // retry — logs then showed BOTH attempts timing out at exactly 8000ms
-  // every time, which looks like a hung/blackholed route (paired with the
-  // ipv4first DNS fix above) rather than genuine slowness. As a third,
-  // structurally different fallback: if direct attempts still fail, try
-  // fetching via images.weserv.nl, a free image proxy — a completely
-  // separate server does the actual fetching from there, so it sidesteps
-  // whatever is specifically blocking Railway's own direct connection.
-  async function fetchProductImage(imageUrl) {
-    if (!imageUrl) return null;
-    const domain = new URL(imageUrl).hostname;
-    const headers = {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'Referer': `https://${domain}/`,
-      'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
-    };
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      try {
-        const r = await axios.get(imageUrl, { responseType: 'arraybuffer', timeout: 8000, headers });
-        return Buffer.from(r.data);
-      } catch (err) {
-        console.warn(`[image fetch] direct attempt ${attempt} failed for ${imageUrl}: ${err.message}`);
-      }
+  // This was never a timeout, a Referer mismatch, or an IPv6 routing problem —
+  // all previously theorised and all wrong. The fix is to stop advertising
+  // formats PDFKit can't use, verify the actual bytes before returning them,
+  // and convert anything else server-side via the wsrv.nl image proxy.
+
+  // Magic-byte check — never trust Content-Type, plenty of CDNs mislabel it
+  function isEmbeddableImage(buf) {
+    if (!buf || buf.length < 12) return false;
+    const jpeg = buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF;
+    const png  = buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47;
+    return jpeg || png;
+  }
+
+  // The image column header has varied across sheet imports — read whichever
+  // variant actually exists rather than silently getting undefined
+  function imageUrlOf(product) {
+    if (!product) return null;
+    for (const key of ['Image URL', 'Image', 'ImageURL', 'Image Url', 'image url']) {
+      const v = (product[key] || '').trim();
+      if (v) return v;
     }
+    return null;
+  }
+
+  // wsrv.nl converts to JPEG server-side. Doubles as the fallback for CDNs
+  // that block Railway's direct connection outright.
+  async function fetchViaProxy(imageUrl, reason) {
     try {
-      const proxyUrl = `https://wsrv.nl/?url=${encodeURIComponent(imageUrl.replace(/^https?:\/\//, ''))}`;
-      const r = await axios.get(proxyUrl, { responseType: 'arraybuffer', timeout: 8000 });
-      console.log(`[image fetch] proxy fallback succeeded for ${imageUrl}`);
-      return Buffer.from(r.data);
+      const proxyUrl = `https://wsrv.nl/?url=${encodeURIComponent(imageUrl.replace(/^https?:\/\//, ''))}&output=jpg&q=85`;
+      const r = await axios.get(proxyUrl, { responseType: 'arraybuffer', timeout: 10000 });
+      const buf = Buffer.from(r.data);
+      if (!isEmbeddableImage(buf)) throw new Error('proxy returned a non-JPEG/PNG payload');
+      console.log(`[image fetch] proxy succeeded (${reason}) for ${imageUrl}`);
+      return buf;
     } catch (err) {
-      console.warn(`[image fetch] proxy fallback also failed for ${imageUrl}: ${err.message}`);
-      return null; // falls back to a plain placeholder box — never breaks layout
+      console.warn(`[image fetch] proxy failed (${reason}) for ${imageUrl}: ${err.message}`);
+      return null;
     }
   }
 
+  async function fetchProductImage(imageUrl) {
+    if (!imageUrl) return null;
+
+    // URL parsing used to sit OUTSIDE any try block — a single malformed cell
+    // in the sheet threw here, rejected the whole Promise.all, and killed PDF
+    // generation entirely. That meant no guide and no email at all, not just
+    // one missing image.
+    let domain;
+    try {
+      domain = new URL(imageUrl).hostname;
+    } catch {
+      console.warn(`[image fetch] invalid Image URL, skipping: ${imageUrl}`);
+      return null;
+    }
+
+    const baseHeaders = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      // JPEG/PNG only — never advertise avif/webp, PDFKit cannot embed either
+      'Accept': 'image/jpeg,image/png,image/*;q=0.8',
+      'Accept-Language': 'en-GB,en;q=0.9',
+    };
+
+    // Two genuinely DIFFERENT attempts rather than the same request twice —
+    // some CDNs reject a mismatched Referer, others reject a missing one
+    const attempts = [
+      { ...baseHeaders, Referer: `https://${domain}/` },
+      { ...baseHeaders },
+    ];
+
+    for (let i = 0; i < attempts.length; i++) {
+      try {
+        const r = await axios.get(imageUrl, {
+          responseType: 'arraybuffer',
+          timeout: 8000,
+          maxRedirects: 5,
+          validateStatus: s => s >= 200 && s < 300,
+          headers: attempts[i],
+        });
+        const buf = Buffer.from(r.data);
+        if (isEmbeddableImage(buf)) return buf;
+        console.warn(`[image fetch] ${imageUrl} returned an unsupported format (likely WebP/AVIF) — converting via proxy`);
+        return await fetchViaProxy(imageUrl, 'format conversion');
+      } catch (err) {
+        console.warn(`[image fetch] direct attempt ${i + 1} failed for ${imageUrl}: ${err.message}`);
+      }
+    }
+
+    return await fetchViaProxy(imageUrl, 'direct fetch blocked');
+  }
+
   const allProductItems = Object.values(products).flat();
+
+  // ── FIX 2: PRODUCT MATCHING ─────────────────────────────────────────────────
+  // The old lookup was `p['Item Name'] === piece.name` — exact string equality
+  // against an AI-generated name. Any drift in case, punctuation or spacing
+  // returns undefined and the image silently disappears. Everything else on
+  // the card (price, brand, URL) comes straight from the AI response, so the
+  // card still looks complete — which is exactly the failure you'd never
+  // spot. Matches on URL first (most reliable), then normalised name, then
+  // prefix, and logs loudly when nothing matches at all.
+  function normName(s) {
+    return (s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  }
+  const byName = new Map();
+  const byUrl = new Map();
+  allProductItems.forEach(p => {
+    const n = normName(p['Item Name']);
+    if (n && !byName.has(n)) byName.set(n, p);
+    const u = (p['Product URL'] || '').trim();
+    if (u && !byUrl.has(u)) byUrl.set(u, p);
+  });
+
+  function findSheetProduct(piece) {
+    if (!piece) return null;
+    const urlHit = piece.url && byUrl.get(piece.url.trim());
+    if (urlHit) return urlHit;
+    const n = normName(piece.name);
+    if (n && byName.has(n)) return byName.get(n);
+    for (const [key, prod] of byName) {
+      if (n && (key.startsWith(n) || n.startsWith(key))) return prod;
+    }
+    console.warn(`[product match] no sheet row matched AI pick "${piece.name}" — no image will render for it`);
+    return null;
+  }
 
   // ── PAGE 1 ────────────────────────────────────────────────────────────────
   bg();
@@ -1390,7 +1527,17 @@ async function buildOccasionPDF(content, occasionData, products) {
     lcard(PAD, y, IW, recapH);
     let recapY = y + 12;
     content.quickRecap.forEach(item => {
-      doc.fontSize(9.5).fillColor(ACCENT).font('Sans-Bold').text('✓', PAD + 14, recapY, { lineBreak: false });
+      // FIX 3: the '✓' character rendered as an empty tofu box — DM Sans's
+      // subset has no glyph for it. Drawing the tick as two vector strokes
+      // instead removes the font dependency entirely. Any other Unicode
+      // symbol added here later would hit the same problem — draw, don't type.
+      doc.save();
+      doc.strokeColor(ACCENT).lineWidth(1.3).lineCap('round').lineJoin('round')
+        .moveTo(PAD + 14, recapY + 5.5)
+        .lineTo(PAD + 17, recapY + 8.5)
+        .lineTo(PAD + 22, recapY + 2.5)
+        .stroke();
+      doc.restore();
       doc.fontSize(9.5).fillColor(INK_MID).font('Sans').text(item, PAD + 30, recapY, { width: IW - 44, lineBreak: false });
       recapY += 16;
     });
@@ -1423,11 +1570,15 @@ async function buildOccasionPDF(content, occasionData, products) {
     .sort((a, b) => categoryRank(a.category) - categoryRank(b.category))
     .slice(0, 5);
 
+  // Resolve each AI pick back to its sheet row ONCE, then reuse — the old code
+  // re-ran the exact-match find separately for the image and for the URL
+  const sheetMatches = pieces.map(piece => findSheetProduct(piece));
+
   // Fetch all product images up front, in parallel
-  const imageBuffers = await Promise.all(pieces.map(piece => {
-    const match = allProductItems.find(p => p['Item Name'] === piece.name);
-    return fetchProductImage(match?.['Image URL']);
-  }));
+  const imageBuffers = await Promise.all(sheetMatches.map(m => fetchProductImage(imageUrlOf(m))));
+
+  const embeddedCount = imageBuffers.filter(Boolean).length;
+  console.log(`[images] ${embeddedCount}/${pieces.length} product images embedded successfully`);
 
   doc.fontSize(22).fillColor(INK).font('Serif-Bold').text('HAND-PICKED', PAD, 78);
   doc.fontSize(22).fillColor(ACCENT).font('Serif-Bold').text('FOR THIS OCCASION', PAD, 106);
@@ -1510,7 +1661,11 @@ async function buildOccasionPDF(content, occasionData, products) {
         // product barely appeared, leaving mostly background/floor visible.
         // Anchoring to the bottom shows far more of the actual garment.
         doc.image(imageBuffers[i], imgX, imgY, { width: IMG_SIZE, height: IMG_SIZE, cover: [IMG_SIZE, IMG_SIZE], align: 'center', valign: 'bottom' });
-      } catch {
+      } catch (err) {
+        // Now logs loudly instead of silently drawing a grey box — this catch
+        // is what hid the WebP root cause for so long. If this ever fires
+        // again the reason will be in the Railway logs.
+        console.error(`[image embed] PDFKit rejected the image for "${piece.name}": ${err.message}`);
         doc.rect(imgX, imgY, IMG_SIZE, IMG_SIZE).fill(BORDER);
       } finally {
         // CRITICAL: must always run, even on failure — if doc.save() ran but
@@ -1532,7 +1687,10 @@ async function buildOccasionPDF(content, occasionData, products) {
     const whyY = nameY + nameH + 2;
     doc.fontSize(8).fillColor(INK_LIGHT).font('Sans').text(whyStr, textX, whyY, { width: textW, lineGap: 1.5 });
 
-    const productUrl = piece.url || allProductItems.find(p => p['Item Name'] === piece.name)?.['Product URL'] || null;
+    // Prefer the tracked affiliate URL from the sheet over the AI's echoed
+    // copy of it — the sheet is the source of truth for tracked Awin links,
+    // and any AI transcription slip here silently costs commission
+    const productUrl = sheetMatches[i]?.['Product URL'] || piece.url || null;
 
     const bottomY = pieceY + CARD_H - 24;
     doc.fontSize(12).fillColor(INK).font('Serif-Bold').text(piece.price || '', textX, bottomY, { lineBreak: false });
@@ -2054,7 +2212,9 @@ async function fetchProducts(budget, goal) {
   const sheets = google.sheets({ version: 'v4', auth });
   const response = await sheets.spreadsheets.values.get({
     spreadsheetId: process.env.GOOGLE_SHEET_ID,
-    range: 'Sheet1!A:J',
+    // Widened to A:Z for the same reason as fetchOccasionProducts — adding the
+    // Priority column must not be able to push Image URL out of range
+    range: 'Sheet1!A:Z',
   });
 
   const rows = response.data.values;
@@ -2545,24 +2705,40 @@ async function buildPDF(content, quizData, products, tier = 'standard') {
   const pieces = (content.recommendedPieces || []).slice(0, 9);
   pageHeader('Your Personal Edit');
   heroBlock(`${pieces.length} PIECES PICKED`, 'FOR YOU', 'Every piece chosen for your build, your colours and your budget — click any name to buy');
+  // Same WebP/AVIF root cause as the occasion PDF — the old Accept header here
+  // requested avif/webp first and hardcoded a Zara Referer for every retailer.
+  // Reuses the same JPEG/PNG-only headers plus a magic-byte check.
   const imageBuffers = await Promise.all(pieces.map(async piece => {
     let imageUrl = null;
     for (const catItems of Object.values(products)) {
       const match = catItems.find(p => p['Item Name'] === piece.name);
-      if (match) { imageUrl = match['Image URL']; break; }
+      if (match) { imageUrl = match['Image URL'] || match['Image'] || null; break; }
     }
     if (!imageUrl) return null;
+    let host;
+    try { host = new URL(imageUrl).hostname; } catch { return null; }
+    const okFormat = (b) => b && b.length > 12 &&
+      ((b[0] === 0xFF && b[1] === 0xD8 && b[2] === 0xFF) ||
+       (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4E && b[3] === 0x47));
     try {
       const r = await axios.get(imageUrl, {
         responseType: 'arraybuffer',
-        timeout: 5000,
+        timeout: 8000,
+        maxRedirects: 5,
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Referer': 'https://www.zara.com/',
-          'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+          'Referer': `https://${host}/`,
+          'Accept': 'image/jpeg,image/png,image/*;q=0.8',
         },
       });
-      return Buffer.from(r.data);
+      const buf = Buffer.from(r.data);
+      if (okFormat(buf)) return buf;
+    } catch { /* fall through to proxy */ }
+    try {
+      const proxyUrl = `https://wsrv.nl/?url=${encodeURIComponent(imageUrl.replace(/^https?:\/\//, ''))}&output=jpg&q=85`;
+      const r = await axios.get(proxyUrl, { responseType: 'arraybuffer', timeout: 10000 });
+      const buf = Buffer.from(r.data);
+      return okFormat(buf) ? buf : null;
     } catch { return null; }
   }));
   const CARD_H = 70, IMG_W = 64, IMG_PAD = 8;
