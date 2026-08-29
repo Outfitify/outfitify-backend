@@ -119,10 +119,19 @@ function emailKey(email) {
 
 function getUserRecord(email) {
   const p = path.join(USERS_DIR, `${emailKey(email)}.json`);
-  if (!fs.existsSync(p)) return { email, freeUsed: false, unlimitedPaid: false, guideCount: 0 };
+  // Diagnostic logging — added after a live repeat-free-guide report. If this
+  // is a persistence/replica issue, these two lines will show it immediately:
+  // either the path never resolves to the same file twice, or the file
+  // genuinely doesn't exist on this instance despite a prior save elsewhere.
+  const exists = fs.existsSync(p);
+  console.log(`[getUserRecord] email=${email} -> path=${p} exists=${exists}`);
+  if (!exists) return { email, freeUsed: false, unlimitedPaid: false, guideCount: 0 };
   try {
-    return JSON.parse(fs.readFileSync(p, 'utf8'));
-  } catch {
+    const record = JSON.parse(fs.readFileSync(p, 'utf8'));
+    console.log(`[getUserRecord] loaded record: freeUsed=${record.freeUsed} unlimitedPaid=${record.unlimitedPaid} guideCount=${record.guideCount} updatedAt=${record.updatedAt}`);
+    return record;
+  } catch (err) {
+    console.warn(`[getUserRecord] failed to parse ${p}: ${err.message}`);
     return { email, freeUsed: false, unlimitedPaid: false, guideCount: 0 };
   }
 }
@@ -130,6 +139,7 @@ function getUserRecord(email) {
 function saveUserRecord(email, record) {
   const p = path.join(USERS_DIR, `${emailKey(email)}.json`);
   fs.writeFileSync(p, JSON.stringify({ ...record, email, updatedAt: Date.now() }));
+  console.log(`[saveUserRecord] email=${email} -> path=${p} wrote freeUsed=${record.freeUsed} unlimitedPaid=${record.unlimitedPaid}`);
 }
 
 function incrementGuideCount(email) {
@@ -689,7 +699,22 @@ async function generateOccasionReport(sessionId, occasionData, userEmail, option
     const token = crypto.randomBytes(32).toString('hex');
     saveDownload(sessionId, { token, pdfPath, email: userEmail, quizData: occasionData, tier: 'occasion', createdAt: Date.now() });
     const downloadUrl = `${process.env.BASE_URL}/api/download/${token}`;
-    await sendOccasionEmail(userEmail, downloadUrl, occasionData.occasionName, sessionId, isFree);
+    // Email is a best-effort notification, NOT part of what makes a guide
+    // successful — the PDF is already built and downloadable via
+    // /api/report-status by this point. A ZeptoMail hiccup (rate limit,
+    // timeout) previously threw from inside this same try block, which made
+    // the whole function reject even though the guide was genuinely ready.
+    // That's exactly what was silently re-arming the free-tier credit: the
+    // caller's .then() that sets freeUsed=true only runs on success, so a
+    // failed EMAIL was blocking freeUsed from ever being set, even though
+    // the customer already had a working download link. Real generation
+    // failures (product fetch, AI content, PDF build) still throw below and
+    // correctly withhold the credit — only the email step is decoupled.
+    try {
+      await sendOccasionEmail(userEmail, downloadUrl, occasionData.occasionName, sessionId, isFree);
+    } catch (emailErr) {
+      console.error(`[email] send failed for session ${sessionId}, guide is still generated and downloadable: ${emailErr.message}`);
+    }
     console.log(`Occasion report ready: ${sessionId}`);
   } catch (err) {
     console.error(`Occasion report failed ${sessionId}:`, err);
@@ -949,7 +974,7 @@ COLD WEATHER CASUAL RULES:
 - occasionDetail2 is duration — a quick trip can get away with less, half a day and especially all day need pieces that stay warm and comfortable throughout without needing to be removed and carried
 - LAYERING is the entire point of this occasion, not an afterthought — a proper coat or jacket, a jumper or hoodie mid-layer, and a base layer that can adapt as temperature changes between indoors and out
 - Practical, genuinely weather-appropriate fabrics matter here — wool, fleece-lined, water-resistant outerwear — this is not a styling-only occasion, it needs to actually keep them warm
-- Trainers or boots are both fine depending on style preference — this occasion does NOT carry the "no trainers" restriction that formal or date occasions do
+- SHOES DECISION — this is not a coin flip on style, tie it to their actual answers. If occasionDetail2 signals a quick or short trip, or occasionDetail signals mostly-indoor time (seeing friends or family, popping somewhere), clean trainers are a genuinely good pick and often more practical than boots — do not default to boots just because it's winter. Reach for boots specifically when occasionDetail signals real outdoor exposure (outdoor activity, a day moving between indoors and out) or occasionDetail2 signals half a day or more. This occasion does NOT carry the "no trainers" restriction that formal or date occasions do — trainers are a legitimate first-choice pick when the answers point that way, not just a fallback when boots aren't available
 - Season is always Winter for this occasion regardless of when the guide is generated`,
 
     'summer-holiday': `
@@ -1085,7 +1110,7 @@ WOMEN'S COSY WEEKEND RULES:
   - Tall: can carry longer maxi coats and oversized knits beautifully
   - Curvy: wrap coats and belted styles define the waist under bulkier winter layers
   - Standard: most coat lengths and knit styles work — focus on genuine warmth first
-- Trainers or boots are both fine depending on style preference — this occasion does NOT carry the "no trainers" restriction that formal occasions do
+- SHOES DECISION — this is not a coin flip on style, tie it to their actual answers. If occasionDetail2 signals a quick or short trip, or occasionDetail signals mostly-indoor time, clean trainers are a genuinely good pick and often more practical than boots — do not default to boots just because it's winter. Reach for boots specifically when occasionDetail signals real outdoor exposure or occasionDetail2 signals half a day or more. This occasion does NOT carry the "no trainers" restriction that formal occasions do — trainers are a legitimate first-choice pick when the answers point that way, not just a fallback
 - Jeans, cosy knits, coats, boots, scarves — practical and considered, not just decorative
 - Season is always Winter for this occasion regardless of when the guide is generated`,
   };
