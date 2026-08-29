@@ -305,7 +305,29 @@ async function fetchOccasionProducts(occasion, budget, fit, gender = 'mens') {
     if (pool.length < 2) pool = occasionFitPool.filter(p => p['Category'] === cat);
     if (pool.length < 2) pool = occasionOnlyPool.filter(p => p['Category'] === cat);
 
-    const budgeted = budgetCascade(pool, budgetTier);
+    // Audited against the live sheet: Jacket, Hoodie/Jacket and Shoes have
+    // ZERO Budget-tagged products for cold-weather-casual, christmas-party
+    // and cosy-weekend — a genuine winter coat or weatherproof boot rarely
+    // exists under £30 in decent quality. Bottoms shows the same gap for
+    // some winter occasions but not others (cosy-weekend has real Budget
+    // stock). Rather than either mis-tag a real £36-50 product as 'Budget'
+    // (misrepresents its actual price) or let every Budget-tier winter
+    // guide show most picks as "over budget" for a gap that better copy
+    // can't fix, the effective target quietly steps up to Mid when Budget
+    // stock for THIS category+occasion is genuinely too thin to use — same
+    // <2 threshold budgetCascade itself already uses. This is fully dynamic
+    // rather than a hardcoded category/occasion list, so it self-corrects
+    // the moment real Budget-tier stock is added anywhere.
+    let effectiveTier = budgetTier;
+    if (budgetTier === 'Budget') {
+      const budgetStockCount = pool.filter(p => (p['Budget'] || '').trim() === 'Budget').length;
+      if (budgetStockCount < 2) {
+        effectiveTier = 'Mid';
+        console.log(`[fetchOccasionProducts] ${cat}: only ${budgetStockCount} Budget-tier product(s) for this occasion — relaxing target to Mid`);
+      }
+    }
+
+    const budgeted = budgetCascade(pool, effectiveTier);
     selected[cat] = budgeted.sort(() => Math.random() - 0.5).slice(0, 6);
     console.log(`[fetchOccasionProducts] ${cat}: ${selected[cat].length} products`);
   });
